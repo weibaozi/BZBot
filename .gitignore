@@ -1,0 +1,6 @@
+test/
+scratch/
+node_modules/
+.env
+*.log
+vendor/cortico/
