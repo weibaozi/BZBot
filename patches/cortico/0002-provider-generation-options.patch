@@ -1,0 +1,595 @@
+diff --git a/docs/providers.md b/docs/providers.md
+index e3d5b4d..e28bebe 100644
+--- a/docs/providers.md
++++ b/docs/providers.md
+@@ -31,6 +31,20 @@ provider 模块不预设任何模型名;端点
+ 
+ ## WebUI
+ 
++新建端点的生成配置默认最大输出 8192 token、上下文上限 1,000,000 token，温度留空，使用模型默认值；
++已有端点保留原值。选择模型时，目录明确给出的上下文上限仍优先填入。
++推理强度使用下拉框，`none` 显示为“不思考”，请求发 `reasoning.effort: none`；
++“使用模型默认值”不发送 effort。模块的 `effortPresets` 按主机名和模型别名（含日期快照）给出原生档位。
++未知端点使用 `effortSuggestions` 并允许自定义，不推断其能力；切换模型或地址后保留当前值，
++若已知模型不支持该值则要求重新选择。温度的“使用模型默认值”按钮删除 `temperature` 配置。
++
++Responses 兼容模块的档位依据：[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)、
++[OpenAI Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、
++[GPT-5.1](https://developers.openai.com/api/docs/models/gpt-5.1)、
++[GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、
++[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol)。
++DeepSeek 使用 `none/low/high/max`，不把映射为 `high` 的 `medium` 单列成不同档位。
++
+ 模型供应商页列出共享端点,一次编辑其中一条。选中一条不改变 `activeProvider`,「设为当前」只写
+ 当前部署的那一项。字段改动随手暂存在浏览器,切走再回来接着编,「放弃更改」丢掉暂存;保存时整条端点
+ 一次写入配置与密钥;暂存不进共享配置,API Key 不写入浏览器。保存带上读取时的 revision,配置或密钥
+diff --git a/src/providers/base.ts b/src/providers/base.ts
+index 2649d21..bc12329 100644
+--- a/src/providers/base.ts
++++ b/src/providers/base.ts
+@@ -13,6 +13,7 @@ import type { PriceDefinition, QuoteTime } from './pricebook.ts';
+ import type { Request } from '../protocol/open-responses/index.ts';
+ import type { ContextRecord } from '../protocol/open-responses/context.ts';
+ import type { GenerateOptions, Generation, GenerationError, ResponseClient } from '../core/generation.ts';
++import type { EffortPreset } from './effort-presets.ts';
+ 
+ /** Providers expose standard Responses and own their native transport semantics. */
+ export abstract class BaseProvider implements ResponseClient {
+@@ -105,6 +106,8 @@ export interface ProviderModule {
+   /** Empty = open: `reasoningEffort` accepts any non-empty string; `effortSuggestions` supplies the candidates. */
+   reasoningTiers: readonly ReasoningTier[];
+   effortSuggestions?: readonly string[];
++  /** Documented choices for specific endpoint hosts and models; unknown gateways stay open. */
++  effortPresets?: readonly EffortPreset[];
+   serviceTiers: readonly ServiceTier[];
+   temperatureNote?: string;
+   /**
+diff --git a/src/providers/effort-presets.ts b/src/providers/effort-presets.ts
+new file mode 100644
+index 0000000..44ab9c3
+--- /dev/null
++++ b/src/providers/effort-presets.ts
+@@ -0,0 +1,14 @@
++/** Provider-owned effort names, scoped to an endpoint and exact model aliases or dated snapshots. */
++export interface EffortPreset {
++  host: string;
++  models: readonly string[];
++  efforts: readonly string[];
++}
++
++export function matchingEfforts(presets: readonly EffortPreset[], baseUrl: string, model: string): readonly string[] | undefined {
++  let host: string;
++  try { host = new URL(baseUrl).hostname; } catch { return undefined; }
++  return presets.find(preset => preset.host === host && preset.models.some(alias =>
++    model === alias || (model.startsWith(alias + '-') && /^\d{4}-\d{2}-\d{2}$/.test(model.slice(alias.length + 1))),
++  ))?.efforts;
++}
+diff --git a/src/providers/openai-responses-compat/index.ts b/src/providers/openai-responses-compat/index.ts
+index 4533067..6db9a68 100644
+--- a/src/providers/openai-responses-compat/index.ts
++++ b/src/providers/openai-responses-compat/index.ts
+@@ -68,6 +68,13 @@ export default {
+   webUi: compatWebUi,
+   reasoningTiers: [],
+   effortSuggestions: EFFORTS,
++  // Official effort names; see docs/providers.md for the source pages.
++  effortPresets: [
++    { host: 'api.deepseek.com', models: ['deepseek-flash', 'deepseek-v4-pro'], efforts: ['none', 'low', 'high', 'max'] },
++    { host: 'api.openai.com', models: ['gpt-5.1'], efforts: ['none', 'low', 'medium', 'high'] },
++    { host: 'api.openai.com', models: ['gpt-5.4'], efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
++    { host: 'api.openai.com', models: ['gpt-6.1-sol', 'gpt-6-astra'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
++  ],
+   serviceTiers: [],
+   validateEntry: (entry, language) => {
+     const S = text(language);
+diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
+index d20a63c..f4d219a 100644
+--- a/src/providers/webui/hub.ts
++++ b/src/providers/webui/hub.ts
+@@ -65,6 +65,7 @@ export class ProviderHub {
+       description: module.localize?.(language)?.description ?? module.description ?? module.title, defaultBaseUrl: module.defaultBaseUrl ?? '',
+       reasoningTiers: module.localize?.(language)?.reasoningTiers ?? module.reasoningTiers,
+       effortSuggestions: module.effortSuggestions ?? [], serviceTiers: module.localize?.(language)?.serviceTiers ?? module.serviceTiers,
++      effortPresets: module.effortPresets ?? [],
+       temperatureNote: module.localize?.(language)?.temperatureNote ?? module.temperatureNote,
+       sections: this.sections(module.id, language),
+     }));
+diff --git a/src/web/client/features/providers/detail.ts b/src/web/client/features/providers/detail.ts
+index d42229a..4eb2b57 100644
+--- a/src/web/client/features/providers/detail.ts
++++ b/src/web/client/features/providers/detail.ts
+@@ -8,6 +8,7 @@ import { LANGUAGE } from '../../core/language.ts';
+ import { pricingEditor } from '../../webui-pages/builtins/llm-settings/pricing-panel.ts';
+ import type { Disposable } from '../../../shared/client-panel.ts';
+ import { S } from './strings.ts';
++import { newModelSpec, reasoningControl } from './generation.ts';
+ 
+ export interface DetailController { dispose(): void; }
+ interface Options {
+@@ -52,6 +53,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+   let panelHost: ReturnType<NonNullable<FeatureContext['webUiPageHost']>> | null = null;
+   /** The model block's way of showing a spec a module panel changed. */
+   let syncSpec: (() => void) | null = null;
++  let refreshReasoning: (() => void) | null = null;
+   /** The model block's list refresh; it runs only when the address is a URL and a key is typed or saved. */
+   let autoFetch: (() => void) | null = null;
+   /** Opens the model block and focuses its list or field; the probe calls it while no model is chosen. */
+@@ -130,7 +132,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+   };
+   function endpointBlock(box: HTMLElement, section: Section) {
+     const body = block(box, section, true);
+-    field(body, 'baseUrl', S.url, editing.entry.baseUrl, value => { editing.entry.baseUrl = value; scheduleFetch(); }, value => {
++    field(body, 'baseUrl', S.url, editing.entry.baseUrl, value => { editing.entry.baseUrl = value; refreshReasoning?.(); scheduleFetch(); }, value => {
+       try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? null : S.required; } catch { return S.required; }
+     });
+     const key = field(body, 'key', S.key, editing.secretValue, value => { editing.secretValue = value; scheduleFetch(); }, undefined, 'password');
+@@ -159,7 +161,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+   }
+   function modelBlock(box: HTMLElement, section: Section, module: Module, spec: Spec) {
+     const body = block(box, section, true);
+-    const modelInput = field(body, 'model', S.model, spec.model, value => { spec.model = value; }, value => value.trim() ? null : S.required);
++    const modelInput = field(body, 'model', S.model, spec.model, value => { spec.model = value; refreshReasoning?.(); }, value => value.trim() ? null : S.required);
+     let listedModels: ListedModel[] = [];
+     let contextInput: HTMLInputElement | null = null;
+     const windowNote = ui.msgline();
+@@ -232,15 +234,10 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+       (picker.hidden ? modelInput : search).focus();
+     };
+     if (saved && !listedOnOpen && listable()) { listedOnOpen = true; void loadModels(); }
+-    const tiers = module.reasoningTiers;
+-    if (tiers.length) {
+-      const select = ui.select({ value: tiers.find(tier => tier.thinking === spec.thinking && tier.effort === spec.reasoningEffort)?.id ?? '', options: tiers.map(tier => ({ value: tier.id, label: tier.label })), onChange: value => {
+-        const tier = tiers.find(tier => tier.id === value)!; spec.thinking = tier.thinking;
+-        if (tier.effort) spec.reasoningEffort = tier.effort; else delete spec.reasoningEffort; change();
+-      } }); select.setAttribute('aria-label', S.reasoning); body.append(ui.field(S.reasoning, select));
+-    } else field(body, 'reasoning', S.reasoning, !spec.thinking ? 'none' : spec.reasoningEffort ?? '', value => {
+-      spec.thinking = value !== 'none'; if (value && value !== 'none') spec.reasoningEffort = value; else delete spec.reasoningEffort;
+-    });
++    const reasoning = reasoningControl(ui, module, editing.entry, change);
++    refreshReasoning = reasoning.refresh;
++    errors.set('reasoning', reasoning.valid);
++    body.append(reasoning.el);
+     for (const [name, label] of [['temperature', S.temperature], ['maxTokens', S.maxTokens], ['contextWindow', S.context]] as const) {
+       const input = field(body, name, label, editing.raw[name] ?? String(spec[name] ?? ''), value => {
+         editing.raw[name] = value; if (!value) delete spec[name]; else spec[name] = Number(value);
+@@ -250,6 +247,16 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+         if (!Number.isFinite(number) || !(name === 'temperature' ? number >= 0 && number <= 2 : Number.isInteger(number) && number > 0)) return S.invalidNumber;
+         return name === 'contextWindow' && spec.maxTokens !== undefined && number <= spec.maxTokens ? S.contextAboveOutput : null;
+       }, 'number');
++      if (name === 'temperature') {
++        input.placeholder = S.modelDefault;
++        input.min = '0'; input.max = '2'; input.step = 'any';
++        const reset = ui.button(S.modelDefault, { onClick: () => {
++          input.value = ''; input.dispatchEvent(new Event('input'));
++        } });
++        reset.hidden = !input.value;
++        input.addEventListener('input', () => { reset.hidden = !input.value; }, opts);
++        body.append(reset);
++      }
+       if (name === 'contextWindow') contextInput = input;
+       if (name === 'maxTokens') {
+         body.append(outputNote);
+@@ -266,7 +273,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+     images.setAttribute('role', 'switch'); images.classList.add('connection-switch');
+     images.addEventListener('change', () => { editing.entry.multimodal = images.checked; change(); }, opts);
+     const imagesField = ui.field(S.images, images); imagesField.classList.add('connection-toggle'); body.append(imagesField);
+-    syncSpec = () => { modelInput.value = spec.model; errors.get('model')?.(); if (contextInput && spec.contextWindow !== undefined) contextInput.value = String(spec.contextWindow); errors.get('contextWindow')?.(); noteCatalog(); };
++    syncSpec = () => { modelInput.value = spec.model; errors.get('model')?.(); reasoning.refresh(); if (contextInput && spec.contextWindow !== undefined) contextInput.value = String(spec.contextWindow); errors.get('contextWindow')?.(); noteCatalog(); };
+   }
+   function pricingBlock(box: HTMLElement, section: Section) {
+     const body = block(box, section, true);
+@@ -305,7 +312,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+   }
+   async function render() {
+     const gen = ++rendering;
+-    disposePanels(); syncSpec = null; autoFetch = null; focusModel = null;
++    disposePanels(); syncSpec = null; refreshReasoning = null; autoFetch = null; focusModel = null;
+     errors.clear(); form.replaceChildren();
+     const identityCard = ui.sheet({ title: S.basic }); identityCard.el.classList.add('connection-identity'); form.append(identityCard.el);
+     const basic = identityCard.body;
+@@ -323,7 +330,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+       const select = ui.select({ value: editing.entry.kind, options: [{ value: '', label: '—' }, ...modules.map(module => ({ value: module.id, label: module.title }))],
+         onChange: kind => {
+           const module = modules.find(module => module.id === kind);
+-          editing.entry = { kind, baseUrl: module?.defaultBaseUrl ?? '', spec: { model: '', thinking: module?.reasoningTiers[0]?.thinking ?? true, ...(module?.reasoningTiers[0]?.effort ? { reasoningEffort: module.reasoningTiers[0].effort } : {}) } };
++          editing.entry = { kind, baseUrl: module?.defaultBaseUrl ?? '', spec: newModelSpec(module) };
+           editing.raw = {}; change(); run(render);
+         } });
+       select.setAttribute('aria-label', S.module);
+diff --git a/src/web/client/features/providers/generation.ts b/src/web/client/features/providers/generation.ts
+new file mode 100644
+index 0000000..e71b7f7
+--- /dev/null
++++ b/src/web/client/features/providers/generation.ts
+@@ -0,0 +1,67 @@
++import { matchingEfforts } from '../../../../providers/effort-presets.ts';
++import type { WebUi } from '../../../shared/client-panel.ts';
++import type { Detail, Module } from './types.ts';
++import { S } from './strings.ts';
++
++/** Defaults apply only when creating an endpoint, never when opening an existing one. */
++export const GENERATION_DEFAULTS = { maxTokens: 8192, contextWindow: 1_000_000 } as const;
++
++export function newModelSpec(module?: Pick<Module, 'reasoningTiers'>): NonNullable<Detail['entry']['spec']> {
++  const tier = module?.reasoningTiers[0];
++  return { model: '', thinking: tier?.thinking ?? true,
++    ...(tier?.effort ? { reasoningEffort: tier.effort } : {}), ...GENERATION_DEFAULTS };
++}
++
++/** Refreshing choices preserves the stored value; changing a choice alone changes the spec. */
++export function reasoningControl(ui: WebUi, module: Pick<Module, 'reasoningTiers' | 'effortSuggestions' | 'effortPresets'>,
++  entry: Detail['entry'], changed: () => void) {
++  const spec = entry.spec!;
++  const box = ui.h('div');
++  const note = ui.msgline();
++  const custom = ui.input({ value: spec.reasoningEffort ?? '' });
++  custom.setAttribute('aria-label', S.customEffort);
++  const select = ui.select({ options: [], onChange: value => {
++    if (module.reasoningTiers.length) {
++      const tier = module.reasoningTiers.find(item => item.id === value)!;
++      spec.thinking = tier.thinking;
++      if (tier.effort) spec.reasoningEffort = tier.effort; else delete spec.reasoningEffort;
++    } else if (value === 'custom') {
++      custom.hidden = false; custom.focus(); return;
++    } else {
++      spec.thinking = value !== 'none';
++      if (value && value !== 'none') spec.reasoningEffort = value; else delete spec.reasoningEffort;
++    }
++    refresh(); changed();
++  } });
++  select.setAttribute('aria-label', S.reasoning);
++  custom.addEventListener('input', () => {
++    spec.thinking = custom.value.trim() !== 'none';
++    if (custom.value.trim() && spec.thinking) spec.reasoningEffort = custom.value.trim(); else delete spec.reasoningEffort;
++    changed();
++  });
++  box.append(ui.field(S.reasoning, select), custom, note);
++  function refresh() {
++    const current = spec.thinking ? spec.reasoningEffort ?? '' : 'none';
++    const known = matchingEfforts(module.effortPresets ?? [], entry.baseUrl, spec.model);
++    const tiers = module.reasoningTiers;
++    const selectedTier = tiers.find(tier => tier.thinking === spec.thinking && tier.effort === spec.reasoningEffort);
++    const choices = tiers.length ? tiers.map(tier => ({ value: tier.id, label: tier.label }))
++      : [{ value: '', label: S.modelDefault }, ...(known ?? (module.effortSuggestions?.length ? module.effortSuggestions : ['none', 'low', 'medium', 'high']))
++        .map(value => ({ value, label: value === 'none' ? S.noThinking : value }))];
++    const selected = tiers.length ? selectedTier?.id ?? current : current;
++    const unsupported = !choices.some(choice => choice.value === selected);
++    if (unsupported) choices.push({ value: selected, label: S.currentEffort(selected) });
++    if (!tiers.length && known === undefined) choices.push({ value: 'custom', label: S.customEffort });
++    select.replaceChildren(...choices.map(choice => {
++      const option = ui.h('option'); option.value = choice.value; option.textContent = choice.label; return option;
++    }));
++    select.value = selected;
++    select.setAttribute('aria-invalid', String(unsupported && (known !== undefined || tiers.length > 0)));
++    note.textContent = unsupported && (known !== undefined || tiers.length > 0) ? S.chooseSupportedEffort : '';
++    note.classList.toggle('bad', !!note.textContent);
++    custom.hidden = true;
++    custom.value = spec.reasoningEffort ?? '';
++  }
++  refresh();
++  return { el: box, refresh, valid: () => select.getAttribute('aria-invalid') !== 'true' };
++}
+diff --git a/src/web/client/features/providers/strings.de.ts b/src/web/client/features/providers/strings.de.ts
+index 7dc0624..412e664 100644
+--- a/src/web/client/features/providers/strings.de.ts
++++ b/src/web/client/features/providers/strings.de.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "Modellstandard verwenden", noThinking: "Ohne Denkprozess (none)", customEffort: "Benutzerdefinierter Denkaufwand",
++  currentEffort: (value: string) => "Aktueller Wert: " + value, chooseSupportedEffort: "Wählen Sie einen vom Modell unterstützten Denkaufwand.",
+   pageTitle: 'Modellverbindungen', navLabel: 'Modellverbindungen', navGroup: 'Core', create: '+ Neue Verbindungsinstanz', newName: 'Unbenannte Instanz',
+   createHint: 'Eine Instanz ist ein Satz Anbieter-Einstellungen, gespeichert als Karte.',
+   empty: 'Noch keine Modellverbindungen', emptyHint: 'Füge eine Modellverbindung hinzu, um Inferenz zu ermöglichen.',
+diff --git a/src/web/client/features/providers/strings.es-419.ts b/src/web/client/features/providers/strings.es-419.ts
+index 222620d..ba64a20 100644
+--- a/src/web/client/features/providers/strings.es-419.ts
++++ b/src/web/client/features/providers/strings.es-419.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "Usar valor predeterminado del modelo", noThinking: "Sin razonamiento (none)", customEffort: "Esfuerzo de razonamiento personalizado",
++  currentEffort: (value: string) => "Valor actual: " + value, chooseSupportedEffort: "Elige un esfuerzo de razonamiento compatible con este modelo.",
+   pageTitle: 'Conexiones de modelo', navLabel: 'Conexiones de modelo', navGroup: 'Core', create: '+ Nueva instancia de conexión', newName: 'Instancia sin nombre',
+   createHint: 'Una instancia es un conjunto de ajustes del proveedor guardado como tarjeta.',
+   empty: 'Aún no hay conexiones de modelo', emptyHint: 'Agrega una conexión de modelo para habilitar la inferencia.',
+diff --git a/src/web/client/features/providers/strings.fr.ts b/src/web/client/features/providers/strings.fr.ts
+index 53b3873..7c9b2f4 100644
+--- a/src/web/client/features/providers/strings.fr.ts
++++ b/src/web/client/features/providers/strings.fr.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "Valeur par défaut du modèle", noThinking: "Sans raisonnement (none)", customEffort: "Effort de raisonnement personnalisé",
++  currentEffort: (value: string) => "Valeur actuelle : " + value, chooseSupportedEffort: "Choisissez un effort de raisonnement pris en charge par ce modèle.",
+   pageTitle: 'Connexions de modèles', navLabel: 'Connexions de modèles', navGroup: 'Core', create: '+ Nouvelle instance de connexion', newName: 'Instance sans nom',
+   createHint: 'Une instance est un ensemble de réglages de fournisseur enregistré sous forme de carte.',
+   empty: 'Aucune connexion de modèle', emptyHint: "Ajoutez une connexion de modèle pour activer l'inférence.",
+diff --git a/src/web/client/features/providers/strings.it.ts b/src/web/client/features/providers/strings.it.ts
+index 8a0ff4b..5c3e743 100644
+--- a/src/web/client/features/providers/strings.it.ts
++++ b/src/web/client/features/providers/strings.it.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "Usa il valore predefinito del modello", noThinking: "Senza ragionamento (none)", customEffort: "Sforzo di ragionamento personalizzato",
++  currentEffort: (value: string) => "Valore attuale: " + value, chooseSupportedEffort: "Scegli uno sforzo di ragionamento supportato da questo modello.",
+   pageTitle: 'Connessioni ai modelli', navLabel: 'Connessioni ai modelli', navGroup: 'Core', create: '+ Nuova istanza di connessione', newName: 'Istanza senza nome',
+   createHint: "Un'istanza è un insieme di impostazioni del provider salvato come scheda.",
+   empty: 'Ancora nessuna connessione ai modelli', emptyHint: "Aggiungi una connessione a un modello per abilitare l'inferenza.",
+diff --git a/src/web/client/features/providers/strings.ja.ts b/src/web/client/features/providers/strings.ja.ts
+index ee84c6a..7c27ec8 100644
+--- a/src/web/client/features/providers/strings.ja.ts
++++ b/src/web/client/features/providers/strings.ja.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "モデルの既定値を使用", noThinking: "思考なし（none）", customEffort: "推論の強さを指定",
++  currentEffort: (value: string) => "現在の値: " + value, chooseSupportedEffort: "このモデルが対応する推論の強さを選択してください。",
+   pageTitle: 'モデル接続', navLabel: 'モデル接続', navGroup: 'Core', create: '+ 新しい接続インスタンス', newName: '名前のないインスタンス',
+   createHint: 'インスタンスとは、プロバイダー設定の 1 セットをカードとして保存したものです。',
+   empty: 'モデル接続はまだありません', emptyHint: 'モデル接続を追加すると推論できるようになります。',
+diff --git a/src/web/client/features/providers/strings.ko.ts b/src/web/client/features/providers/strings.ko.ts
+index 56aa790..3e554f6 100644
+--- a/src/web/client/features/providers/strings.ko.ts
++++ b/src/web/client/features/providers/strings.ko.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "모델 기본값 사용", noThinking: "추론 안 함 (none)", customEffort: "사용자 지정 추론 강도",
++  currentEffort: (value: string) => "현재 값: " + value, chooseSupportedEffort: "이 모델이 지원하는 추론 강도를 선택하세요.",
+   pageTitle: '모델 연결', navLabel: '모델 연결', navGroup: 'Core', create: '+ 새 연결 인스턴스', newName: '이름 없는 인스턴스',
+   createHint: '인스턴스는 공급자 설정 한 세트를 카드로 저장한 것입니다.',
+   empty: '아직 모델 연결이 없습니다', emptyHint: '모델 연결을 추가해야 추론할 수 있습니다.',
+diff --git a/src/web/client/features/providers/strings.pt-BR.ts b/src/web/client/features/providers/strings.pt-BR.ts
+index 64fde8f..d2fc5e3 100644
+--- a/src/web/client/features/providers/strings.pt-BR.ts
++++ b/src/web/client/features/providers/strings.pt-BR.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "Usar padrão do modelo", noThinking: "Sem raciocínio (none)", customEffort: "Esforço de raciocínio personalizado",
++  currentEffort: (value: string) => "Valor atual: " + value, chooseSupportedEffort: "Escolha um esforço de raciocínio compatível com este modelo.",
+   pageTitle: 'Conexões de modelo', navLabel: 'Conexões de modelo', navGroup: 'Core', create: '+ Nova instância de conexão', newName: 'Instância sem nome',
+   createHint: 'Uma instância é um conjunto de configurações do provedor salvo como cartão.',
+   empty: 'Ainda não há conexões de modelo', emptyHint: 'Adicione uma conexão de modelo para habilitar a inferência.',
+diff --git a/src/web/client/features/providers/strings.ru.ts b/src/web/client/features/providers/strings.ru.ts
+index 939812d..0ce8cb9 100644
+--- a/src/web/client/features/providers/strings.ru.ts
++++ b/src/web/client/features/providers/strings.ru.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "По умолчанию для модели", noThinking: "Без рассуждения (none)", customEffort: "Своя глубина рассуждения",
++  currentEffort: (value: string) => "Текущее значение: " + value, chooseSupportedEffort: "Выберите глубину рассуждения, поддерживаемую этой моделью.",
+   pageTitle: 'Подключения к моделям', navLabel: 'Подключения к моделям', navGroup: 'Core', create: '+ Новый экземпляр подключения', newName: 'Безымянный экземпляр',
+   createHint: 'Экземпляр — это набор настроек провайдера, сохранённый как карточка.',
+   empty: 'Подключений к моделям пока нет', emptyHint: 'Добавьте подключение к модели, чтобы включить инференс.',
+diff --git a/src/web/client/features/providers/strings.ts b/src/web/client/features/providers/strings.ts
+index ba4394f..9725538 100644
+--- a/src/web/client/features/providers/strings.ts
++++ b/src/web/client/features/providers/strings.ts
+@@ -9,6 +9,8 @@ import { S as ptBR } from './strings.pt-BR.ts';
+ import { S as it } from './strings.it.ts';
+ import { S as ru } from './strings.ru.ts';
+ const zh = {
++  modelDefault: '使用模型默认值', noThinking: '不思考（none）', customEffort: '自定义推理强度',
++  currentEffort: (value: string) => `当前值：${value}`, chooseSupportedEffort: '请选择此模型支持的推理强度。',
+   pageTitle: '模型供应商', navLabel: '模型供应商', navGroup: 'Core', create: '+ 新建供应商实例', newName: '未命名实例',
+   createHint: '实例 = 填一组供应商配置保存成卡片',
+   empty: '还没有模型供应商', emptyHint: '添加一条模型连接后，Cortico 才能进行模型推理。',
+@@ -40,6 +42,8 @@ const zh = {
+   deleteConfirm: '删除供应商及其目录中的全部文件？', referenced: '此供应商正在被以下 Bot 使用，不能删除：', reload: '重新加载',
+ };
+ export const en: typeof zh = {
++  modelDefault: 'Use model default', noThinking: 'No thinking (none)', customEffort: 'Custom reasoning effort',
++  currentEffort: (value: string) => `Current value: ${value}`, chooseSupportedEffort: 'Choose a reasoning effort supported by this model.',
+   pageTitle: 'Model connections', navLabel: 'Model connections', navGroup: 'Core', create: '+ New connection instance', newName: 'Unnamed instance',
+   createHint: 'An instance is one set of provider settings saved as a card.',
+   empty: 'No model connections yet', emptyHint: 'Add a model connection to enable inference.',
+diff --git a/src/web/client/features/providers/strings.zh-Hant.ts b/src/web/client/features/providers/strings.zh-Hant.ts
+index f520405..ef3b79c 100644
+--- a/src/web/client/features/providers/strings.zh-Hant.ts
++++ b/src/web/client/features/providers/strings.zh-Hant.ts
+@@ -1,6 +1,8 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++  modelDefault: "使用模型預設值", noThinking: "不思考（none）", customEffort: "自訂推理強度",
++  currentEffort: (value: string) => "目前值：" + value, chooseSupportedEffort: "請選擇此模型支援的推理強度。",
+   pageTitle: '模型供應商', navLabel: '模型供應商', navGroup: 'Core', create: '+ 新增供應商實例', newName: '未命名實例',
+   createHint: '實例 = 填一組供應商設定儲存成卡片',
+   empty: '還沒有模型供應商', emptyHint: '新增一條模型連線後，Cortico 才能進行模型推理。',
+diff --git a/tests/web/provider-generation.test.ts b/tests/web/provider-generation.test.ts
+new file mode 100644
+index 0000000..6ed9d1d
+--- /dev/null
++++ b/tests/web/provider-generation.test.ts
+@@ -0,0 +1,155 @@
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { createServer } from 'node:http';
++import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { createWebUi } from '../../src/web/client/ui/index.ts';
++import { Lifecycle } from '../../src/web/client/core/lifecycle.ts';
++import { mountDetail } from '../../src/web/client/features/providers/detail.ts';
++import { GENERATION_DEFAULTS, newModelSpec, reasoningControl } from '../../src/web/client/features/providers/generation.ts';
++import type { FeatureContext } from '../../src/web/client/features/feature.ts';
++import type { Detail, Editing } from '../../src/web/client/features/providers/types.ts';
++import { ProviderHub } from '../../src/providers/webui/hub.ts';
++import { ProviderRegistry } from '../../src/providers/registry.ts';
++import { ProviderSettings } from '../../src/providers/webui/settings.ts';
++import { matchingEfforts } from '../../src/providers/effort-presets.ts';
++import { responseRequest } from '../../src/protocol/open-responses/context-helpers.ts';
++import { buildResponsesBody } from '../../src/providers/openai-responses-compat/native.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { makeCfg, makeTmpDir } from '../core/helpers.ts';
++
++const cleanups: Array<() => void | Promise<void>> = [];
++const NodeAbortController = globalThis.AbortController;
++// Node resolves the real provider registry; the controls use a real DOM in the same test.
++const DOM_MODULE = 'jsdom';
++const { JSDOM } = await import(DOM_MODULE);
++beforeEach(() => {
++  const dom = new JSDOM('<!doctype html><html lang="zh"><body></body></html>', { url: 'http://localhost', pretendToBeVisual: true });
++  for (const key of ['window', 'document', 'location', 'localStorage', 'Event', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'AbortController', 'requestAnimationFrame', 'cancelAnimationFrame'])
++    vi.stubGlobal(key, key === 'window' ? dom.window : dom.window[key]);
++  cleanups.push(() => dom.window.close());
++});
++afterEach(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); cleanups.length = 0; vi.unstubAllGlobals(); });
++const preset = { host: 'model.test', models: ['thinking-model'], efforts: ['none', 'low', 'high', 'max'] };
++const fixedModule = { reasoningTiers: [], effortSuggestions: ['none', 'low', 'medium', 'high'], effortPresets: [preset] };
++const endpoint = (): Detail['entry'] => ({ kind: 'openai-responses-compat', baseUrl: 'https://model.test/v1', spec: { model: 'thinking-model', thinking: true, reasoningEffort: 'low' } });
++function widgets() {
++  const lifecycle = new Lifecycle(error => { throw error; }); cleanups.push(() => lifecycle.dispose());
++  const ui = createWebUi({ memo: { get: (_key, fallback) => fallback, set: () => {} }, overlayHost: document.body, signal: lifecycle.signal, doc: document });
++  return { ui, lifecycle };
++}
++function control(entry = endpoint(), module = fixedModule) {
++  const { ui } = widgets();
++  const widget = reasoningControl(ui, module, entry, () => {}); document.body.append(widget.el);
++  const select = widget.el.querySelector('select')!;
++  return { entry, widget, select, choose: (value: string) => { select.value = value; select.dispatchEvent(new Event('change')); } };
++}
++const wire = (entry: Detail['entry']) => buildResponsesBody(responseRequest(entry.spec!, []), {}, { reasoningReplay: 'plaintext' });
++
++it('selects native effort names and sends none explicitly, while model default omits effort and temperature', () => {
++  const { entry, choose, select } = control();
++  expect([...select.options].map(option => option.value)).toEqual(['', ...preset.efforts]);
++  choose('max'); expect(wire(entry).reasoning).toEqual({ effort: 'max' });
++  choose('none'); expect(wire(entry).reasoning).toEqual({ effort: 'none' });
++  expect(entry.spec).not.toHaveProperty('reasoningEffort');
++  choose(''); expect(wire(entry)).not.toHaveProperty('reasoning');
++  expect(wire(entry)).not.toHaveProperty('temperature');
++});
++it('matches exact hosts and model aliases or dated snapshots without guessing capabilities for gateways or variants', () => {
++  expect(matchingEfforts([preset], 'https://model.test/v1/', 'thinking-model-2026-10-01')).toEqual(preset.efforts);
++  for (const [url, model] of [['https://model.test.attacker.test', 'thinking-model'], ['https://gateway.test', 'thinking-model'], ['https://model.test', 'thinking-model-pro'], ['bad url', 'thinking-model']])
++    expect(matchingEfforts([preset], url, model)).toBeUndefined();
++});
++it('preserves an existing effort while a model changes and requires a supported selection before saving', () => {
++  const entry = endpoint(); entry.spec!.reasoningEffort = 'medium';
++  const { widget, choose, select } = control(entry);
++  expect(select.value).toBe('medium'); expect(widget.valid()).toBe(false);
++  expect(entry.spec!.reasoningEffort).toBe('medium');
++  choose('high'); expect(widget.valid()).toBe(true);
++  entry.baseUrl = 'https://gateway.test'; widget.refresh();
++  expect([...select.options].map(option => option.value)).toContain('medium');
++});
++it('keeps custom efforts usable on unknown gateways and retains fixed module tiers', () => {
++  const entry = endpoint(); entry.baseUrl = 'https://gateway.test'; entry.spec!.reasoningEffort = 'adaptive';
++  const { widget, select, choose } = control(entry);
++  expect(select.value).toBe('adaptive'); expect(widget.valid()).toBe(true);
++  choose('custom');
++  const input = widget.el.querySelector('input')!; input.value = 'extended'; input.dispatchEvent(new Event('input'));
++  expect(wire(entry).reasoning).toEqual({ effort: 'extended' });
++  const { ui } = widgets();
++  const fixed = reasoningControl(ui, { ...fixedModule, reasoningTiers: [{ id: 'off', label: 'Off', thinking: false }, { id: 'on', label: 'On', thinking: true }] },
++    { ...endpoint(), spec: { model: 'test-model', thinking: false } }, () => {});
++  expect([...fixed.el.querySelector('select')!.options].map(option => option.value)).toEqual(['off', 'on']);
++});
++
++/** A real HTTP listener and ProviderHub persist the form; no running deployment or external service is used. */
++async function editor(existing?: Detail['entry']) {
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const rootDir = join(temp.dir, 'providers'); mkdirSync(rootDir);
++  const file = join(temp.dir, 'config.json'); writeFileSync(file, '{}');
++  const cfg = makeCfg({ providers: {}, activeProvider: '' });
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: rootDir, readBlob: () => null, keepThinking: () => true, log: nullLogger() });
++  const hub = new ProviderHub(cfg, registry, new ProviderSettings(cfg, registry, file, rootDir), file, rootDir);
++  const saved = existing ? hub.save(null, { name: 'Sample', entry: existing }, 'zh') : null;
++  const server = createServer(async (req, res) => {
++    try {
++      let raw = ''; for await (const chunk of req) raw += chunk;
++      const body = JSON.parse(raw || '{}');
++      const result = req.url === '/api/provider-modules/config' ? hub.groups(body.name, body.entry, 'zh')
++        : req.url === '/api/providers' ? hub.save(null, body, 'zh')
++        : req.url === '/api/providers/Sample/save' ? hub.save('Sample', body, 'zh') : null;
++      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(result));
++    } catch (error) { res.statusCode = 400; res.end(JSON.stringify({ error: String(error) })); }
++  });
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++  cleanups.push(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
++  const address = server.address() as { port: number };
++  const fetchHttp = globalThis.fetch;
++  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
++    const controller = new NodeAbortController();
++    const abort = () => controller.abort();
++    if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener('abort', abort, { once: true });
++    try { return await fetchHttp(new URL(url, `http://127.0.0.1:${address.port}`), { ...init, signal: controller.signal }); }
++    finally { init?.signal?.removeEventListener('abort', abort); }
++  });
++  const { ui, lifecycle } = widgets();
++  const root = document.createElement('div'); document.body.append(root);
++  const ctx = { root, ui, signal: lifecycle.signal, lifecycle, onError: (error: unknown) => { throw error; } } as unknown as FeatureContext;
++  let changed: Editing | null = null; let savedName = '';
++  const modules = hub.moduleList('zh');
++  await mountDetail({ ctx, root, modules, saved,
++    draft: saved ? null : { original: null, name: 'Sample', entry: { kind: '', baseUrl: '' }, secretValue: '', raw: {} },
++    changed: value => { changed = value; }, onSaved: async name => { savedName = name; }, cancelled: async () => {}, deleted: async () => {}, duplicate: async () => {},
++  }).then(controller => cleanups.push(() => controller.dispose()));
++  return { root, hub, rootDir, changed: () => changed!, savedName: () => savedName };
++}
++it('new endpoint defaults survive a real save and omit temperature on the wire', async () => {
++  const draft = await editor();
++  const kind = draft.root.querySelector<HTMLSelectElement>('[aria-label="供应商类型"]')!;
++  kind.value = 'openai-responses-compat'; kind.dispatchEvent(new Event('change'));
++  await vi.waitFor(() => expect(draft.root.querySelector('[aria-label="模型"]')).not.toBeNull());
++  expect(draft.changed().entry.spec).toEqual(newModelSpec());
++  const model = draft.root.querySelector<HTMLInputElement>('[aria-label="模型"]')!;
++  model.value = 'test-model'; model.dispatchEvent(new Event('input'));
++  const url = draft.root.querySelector<HTMLInputElement>('[aria-label="API 地址"]')!;
++  url.value = 'https://model.test'; url.dispatchEvent(new Event('input'));
++  [...draft.root.querySelectorAll('button')].find(button => button.textContent === '保存')!.click();
++  await vi.waitFor(() => expect(draft.savedName()).toBe('Sample'));
++  const persisted = JSON.parse(readFileSync(join(draft.rootDir, 'Sample', 'config.json'), 'utf8'));
++  expect(persisted.spec).toMatchObject(GENERATION_DEFAULTS);
++  expect(wire(persisted)).toMatchObject({ max_output_tokens: GENERATION_DEFAULTS.maxTokens });
++  expect(wire(persisted)).not.toHaveProperty('temperature');
++});
++it('opening an endpoint preserves saved values and resetting temperature omits it from the persisted request', async () => {
++  const entry = endpoint(); entry.spec = { ...entry.spec!, temperature: 0.65, maxTokens: 4000, contextWindow: 32000 };
++  const { root, changed, savedName, hub } = await editor(entry);
++  expect(changed().entry).toEqual(hub.detail('Sample', 'zh').entry);
++  const temperature = root.querySelector<HTMLInputElement>('[aria-label="温度"]')!;
++  expect(temperature.value).toBe('0.65');
++  [...root.querySelectorAll('button')].find(button => button.textContent === '使用模型默认值')!.click();
++  expect(temperature.value).toBe('');
++  [...root.querySelectorAll('button')].find(button => button.textContent === '保存')!.click();
++  await vi.waitFor(() => expect(savedName()).toBe('Sample'));
++  const saved = hub.detail('Sample', 'zh').entry;
++  expect(saved.spec).toMatchObject({ maxTokens: 4000, contextWindow: 32000 });
++  expect(wire(saved)).not.toHaveProperty('temperature');
++});
+diff --git a/tsconfig.json b/tsconfig.json
+index f24061a..d53488d 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -36,6 +36,7 @@
+     "tests/web/client-language.test.ts",
+     "tests/web/settings-general.test.ts",
+     "tests/web/feature-providers.test.ts",
++    "tests/web/provider-generation.test.ts",
+     "tests/web/feature-extensions.test.ts",
+     "tests/web/extensions-markdown.test.ts",
+     "src/worlds/*/webui/**",
+diff --git a/tsconfig.web.json b/tsconfig.web.json
+index 1f73b62..36d6cbe 100644
+--- a/tsconfig.web.json
++++ b/tsconfig.web.json
+@@ -26,6 +26,7 @@
+     "tests/web/client-language.test.ts",
+     "tests/web/settings-general.test.ts",
+     "tests/web/feature-providers.test.ts",
++    "tests/web/provider-generation.test.ts",
+     "tests/web/feature-extensions.test.ts",
+     "tests/web/extensions-markdown.test.ts"
+   ]
