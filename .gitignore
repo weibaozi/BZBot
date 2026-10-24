@@ -4,3 +4,4 @@ node_modules/
 .env
 *.log
 vendor/cortico/
+dist/

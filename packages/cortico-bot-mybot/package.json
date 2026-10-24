@@ -1,0 +1,23 @@
+{
+  "name": "cortico-bot-mybot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "myBot: corti-soulmate with myBot's admin panels on the Persona page",
+  "license": "MIT",
+  "keywords": ["cortico-bot", "cortico"],
+  "engines": { "node": ">=22" },
+  "main": "./index.ts",
+  "cortico": {
+    "kind": "bot",
+    "api": 7,
+    "displayName": "myBot",
+    "webUiClient": "dist/webui.js",
+    "webUiStyle": "dist/webui.css"
+  },
+  "scripts": {
+    "build:webui": "node scripts/build-webui.mjs",
+    "test": "node ../../vendor/cortico/node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.web.json"
+  }
+}

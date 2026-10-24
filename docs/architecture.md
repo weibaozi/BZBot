@@ -8,7 +8,7 @@
 
 | 决定 | 选择 | 理由 |
 |---|---|---|
-| 内核 | [Cortico](https://github.com/Pal-AI-Lab/Cortico)（MIT），锁定版本，**不改它的源码** | 事件驱动、常驻会话、交接机制和 QQ 接入都是现成的；实测缓存命中 89–97% |
+| 内核 | [Cortico](https://github.com/Pal-AI-Lab/Cortico)（MIT），锁定版本，**不直接改源码**，必要的改动以补丁文件管理并提给上游 | 事件驱动、常驻会话、交接机制和 QQ 接入都是现成的；实测缓存命中 89–97% |
 | 人格底座 | Cortico 自带的 `corti-soulmate` | 已有 memo 三级、做梦、读写权限分离、作息、闹钟、人物档案 |
 | 模型接入 | Coopanion 的 `cortico-provider-coo` 扩展（AGPL，自用） | 覆盖 DeepSeek、Claude、Gemini、Kimi、通义、智谱等，按 base URL 自动选协议 |
 | 第一版前端 | QQ（日常聊天）+ Cortico WebUI（管理） | 后端放在家里的服务器上；桌宠需要拆成两端，放到后面 |
@@ -108,6 +108,7 @@ myBot/
 ├── AGENTS.md                   给 Codex / Claude Code 的工作规则
 ├── docs/                       本目录
 ├── vendor/cortico/             普通 clone（不进 myBot 的 git），由 scripts/m0-setup.ps1 锁定 commit
+├── patches/cortico/            需要 Cortico 改动时的补丁文件，安装脚本自动打上（见 AGENTS.md 第 1 条）
 ├── packages/
 │   ├── cortico-bot-mybot/
 │   ├── cortico-world-mcp/
@@ -134,7 +135,7 @@ myBot/
 
 ## 8. 待验证的技术点
 
-1. **bot 包怎么继承 CortiSoulmate**：扩展包只能用 `cortico/` 前缀导入 `src/` 下的模块，`bots/` 不在这个路径里。可选做法：（A）像 Coopanion 那样，用相对路径引用 `vendor/cortico/bots/...`；（B）把 corti-soulmate 复制进自己的包。M1 开始时先验证。
+1. **bot 包怎么继承 CortiSoulmate（已解决）**：`cortico-bot-mybot` 用相对路径导入 `vendor/cortico/bots/corti-soulmate`（Coopanion 的做法），以 link 方式装进 `vendor/cortico/extensions`。服务端和浏览器端都已验证。代价是这个包离开 myBot 仓库就跑不起来，对我们没有影响。
 2. **provider-coo 能不能单独装**：确认它是否已发布到 npm；没发布就从 Coopanion 仓库的本地目录 link 进来。
 3. **主动性闸门放在哪一层**：计划在 Persona 里覆写拼装 World 工具的方法，给 `qq_draft` / `qq_confirm` 包一层检查。需要确认 Cortico 允许这样包装，或者有更合适的钩子。
 4. **SQLite 选型**：优先用 Node 内置的 `node:sqlite` 加载 sqlite-vec 扩展；不行再换 better-sqlite3。

@@ -1,0 +1,20 @@
+{
+  // Node side: the bot definition and the panels' server half. `cortico/*` is the pinned framework in vendor/.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "typeRoots": ["../../vendor/cortico/node_modules/@types"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "cortico/*": ["../../vendor/cortico/src/*"] }
+  },
+  "include": ["index.ts", "shapes.ts", "server/**/*.ts", "tests/**/*.ts"]
+}

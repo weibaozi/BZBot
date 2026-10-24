@@ -37,9 +37,26 @@ git -C $cortico fetch --quiet origin; Check "git fetch"
 git -C $cortico checkout --quiet $CorticoCommit; Check "git checkout"
 Write-Host "Cortico at $(git -C $cortico log -1 --format='%h %cd')"
 
+Step "Applying myBot's patches to Cortico (patches\cortico\*.patch)"
+# Each patch is one change we need from Cortico until it lands upstream. A patch that is already
+# in the working copy is skipped, so the script can run again on the same checkout.
+$patched = $false
+foreach ($patch in Get-ChildItem (Join-Path $root "patches\cortico") -Filter *.patch -ErrorAction SilentlyContinue | Sort-Object Name) {
+  $ErrorActionPreference = "Continue"
+  git -C $cortico apply --reverse --check $patch.FullName 2>&1 | Out-Null
+  $alreadyApplied = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = "Stop"
+  if ($alreadyApplied) { Write-Host "already applied: $($patch.Name)"; continue }
+  git -C $cortico apply $patch.FullName; Check "git apply $($patch.Name)"
+  Write-Host "applied: $($patch.Name)"
+  $patched = $true
+}
+
 Step "Installing Cortico dependencies"
 Push-Location $cortico
 corepack pnpm install --frozen-lockfile; Check "pnpm install"
+# The launcher builds the WebUI only when no build exists; rebuild so patched pages are served.
+if ($patched) { corepack pnpm run build:web; Check "pnpm run build:web" }
 Pop-Location
 
 Step "Pointing Cortico at the deployment root $CorticoHome"
@@ -67,6 +84,14 @@ if (-not (Test-Path $pkg)) { Write-Utf8 $pkg "{ `"private`": true }`n" }
 Push-Location $ext
 corepack pnpm add "cortico-provider-coo@$ProviderCooVersion"; Check "pnpm add cortico-provider-coo"
 Pop-Location
+
+Step "Building and linking myBot's bot package (packages\cortico-bot-mybot)"
+$botPkg = Join-Path $root "packages\cortico-bot-mybot"
+node (Join-Path $botPkg "scripts\build-webui.mjs"); Check "build-webui"
+Push-Location $ext
+corepack pnpm add "link:../../../packages/cortico-bot-mybot"; Check "pnpm add cortico-bot-mybot"
+Pop-Location
+Write-Host "A deployment uses it with deployment.json { `"bot`": `"cortico-bot-mybot`" }"
 
 Step "Done"
 Write-Host "Start it with:  cd `"$cortico`"; node bin\cortico.mjs $BotName"

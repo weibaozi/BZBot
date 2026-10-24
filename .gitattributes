@@ -1,0 +1,2 @@
+# Patches must apply to Cortico's LF sources byte for byte; never convert their line endings.
+*.patch -text

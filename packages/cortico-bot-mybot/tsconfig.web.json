@@ -1,0 +1,19 @@
+{
+  // Browser side: the Persona page bundle (webui/). Shapes shared with the server come in as types only.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // The panel contract's types reach Cortico's core types, which import node: modules.
+    "types": ["node"],
+    "typeRoots": ["../../vendor/cortico/node_modules/@types"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "cortico/*": ["../../vendor/cortico/src/*"] }
+  },
+  "include": ["shapes.ts", "webui/**/*.ts","../../vendor/cortico/src/web/shared/css.d.ts"]
+}
