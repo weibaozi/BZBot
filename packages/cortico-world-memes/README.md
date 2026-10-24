@@ -1,6 +1,6 @@
-# `definition.ts` / `QqextrasWorld`：表情包管理与向量召回
+# `definition.ts` / `MemesWorld`：表情包管理与向量召回
 
-表情包管理、语义化和设置中心通过一个独立 World 提供。运行模式为「向量召回 · 主模型选图」，QQ 关闭时也可使用。为兼容已有部署，保留包名 `cortico-world-qqextras`、World id `qqextras`、`worlds.qqextras.memes` 配置和 `qqextras/memes/` 数据目录。
+表情包管理、语义化和设置中心通过一个独立 World 提供。运行模式为「向量召回 · 主模型选图」，QQ 关闭时也可使用。包名为 `cortico-world-memes`，World id 为 `memes`，配置位于 `worlds.memes.memes`，数据位于部署的 `memes/` 目录。工具按下游要求命名为 `search_meme`、`get_meme`。
 
 ## 管理
 
@@ -27,17 +27,23 @@
 
 模式页提供配图开关、概率、每次配图上限 0/1、视觉模型、embedding、候选数、最低相似度、视觉超时和导入程序设置。字段来自同一份 ConfigGroup，保存走 Cortico 配置校验与热更新。密钥分别存入部署 `.env` 的 `CORTICO_MEME_VISION_KEY`、`CORTICO_MEME_EMBEDDING_KEY`；界面只返回是否配置，不回显密钥。
 
-`ENV_PROMPT.md` 是可编辑的表情使用预设模板：主模型在准备回复时结合当前 session 中的人设、对话与收件人偏好，决定是否配图。要配图时调用 `qqextras_search_memes({keywords: ["安慰对方", "温柔抱抱", "陪伴"]})`，给出 1–8 个短词或短语。工具只进行一次查询 embedding 和向量召回，按候选数与最低相似度返回 id、描述、标签、配字和相似度；不调用辅助模型，不做最终选择。概率未命中或没有候选时返回原因。
+`ENV_PROMPT.md` 是可编辑的表情使用预设模板：主模型在准备回复时结合当前 session 中的人设、对话与收件人偏好，决定是否配图。要配图时调用 `search_meme({keywords: ["安慰对方", "温柔抱抱", "陪伴"]})`，给出 1–8 个短词或短语。工具只进行一次查询 embedding 和向量召回，按候选数与最低相似度返回 id、描述、标签、配字和相似度；不调用辅助模型，不做最终选择。概率未命中或没有候选时返回原因。
 
 候选通过普通工具回执追加到同一个 session，主模型复用已有上下文判断选一张或不选，无需复制聊天历史、人设或启动另一个模型会话。相似度只用于召回，主模型可以选择较低排名的候选。动态候选不进入系统前缀；编辑预设模板后，按 Cortico 的提示词加载流程生效，立即重载前缀会损失一次缓存。
 
-选中后 `qqextras_get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0003-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
+选中后 `get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0003-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
 
 视觉标注仍使用 OpenAI 兼容 `/chat/completions`，只在生成图片语义时调用；embedding 使用 `/embeddings`，不借用主模型登录凭据。模型温度使用服务默认值。查询向量缓存最多 128 条；bge-small-zh 的查询前缀须与服务器预处理约定一致。模型地址、名称或查询前缀改变后需建立匹配索引。管理页测试和会话工具使用同一召回方法，显示候选与 embedding/search 耗时，不执行主模型选图、不发送消息。
 
 ### 从 0.3.x 升级
 
-重启扩展以加载新工具声明；`qqextras_choose_meme(reply, context?, persona?)` 替换为 `qqextras_search_memes(keywords)`。已保存的 `auxiliaryUrl`、`auxiliaryModel`、`contextTurns`、`injectPersona` 及辅助模型密钥不再使用，可自行清理；图片、语义和向量索引继续复用。`timeoutSeconds` 现在只控制视觉标注。若部署已有 `prompts/QQEXTRAS.md` 自定义覆盖，将其中的旧选图流程更新为本包 `ENV_PROMPT.md` 的关键词召回流程，保留自定义配图偏好。
+重启扩展以加载新工具声明；`qqextras_choose_meme(reply, context?, persona?)` 替换为 `search_meme(keywords)`。已保存的 `auxiliaryUrl`、`auxiliaryModel`、`contextTurns`、`injectPersona` 及辅助模型密钥不再使用，可自行清理；图片、语义和向量索引继续复用。`timeoutSeconds` 现在只控制视觉标注。若部署已有 `prompts/MEMES.md` 自定义覆盖，将其中的旧选图流程更新为本包 `ENV_PROMPT.md` 的关键词召回流程，保留自定义配图偏好。
+
+### 从 qqextras 改名
+
+停止 bot 后，先运行 `node packages/cortico-world-memes/scripts/migrate-qqextras.mjs <profile目录>` 预览，追加 `--apply` 执行。脚本将 `worlds.qqextras` 改为 `worlds.memes`，把 `qqextras/memes/` 移到 `memes/`，并从旧 `prompts/QQEXTRAS.md` 生成 `prompts/MEMES.md`（更新搜图、取图工具名，保留自定义文案与旧文件）。原配置备份到同一部署的 `config.before-memes.json`；目标配置或图库已存在时拒绝覆盖。迁移使用 Node 24 的 TypeScript 支持；较早的 Node 可通过 tsx 运行。
+
+将扩展依赖从 `cortico-world-qqextras` 替换为 `cortico-world-memes` 并链接新包目录，构建面板后重启。管理页面为 `#/provider/world%3Amemes`。不再注册旧工具别名，重启后系统前缀和工具声明使用新名称；已有会话的历史回执保持原样。
 
 ## 验证与来源
 

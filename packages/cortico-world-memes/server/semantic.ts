@@ -1,4 +1,4 @@
-import type { QqextrasConfigSection } from '../config.ts';
+import type { MemesConfigSection } from '../config.ts';
 import { hash, MemeLibrary } from './library.ts';
 import { MemeSearch } from './search.ts';
 import { CAPTION_PROMPT, generateHttp, type Generate, type ModelOptions } from './models.ts';
@@ -6,7 +6,7 @@ import { CAPTION_PROMPT, generateHttp, type Generate, type ModelOptions } from '
 export interface Progress { stage: string; done: number; total: number; failed: number; skipped: number; errors: Array<{ id: string; error: string }> }
 export class MemeSemantic {
   constructor(private library: MemeLibrary, private search: MemeSearch,
-    private config: () => QqextrasConfigSection['memes'], private model: () => ModelOptions,
+    private config: () => MemesConfigSection['memes'], private model: () => ModelOptions,
     private generate: Generate = generateHttp) {}
 
   async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal) {

@@ -53,7 +53,7 @@ it('a failed rebuild preserves the previous complete index', async () => {
 it('returns a selected image as a tool attachment without claiming delivery and respects disable', async () => {
   const { instance, cfg } = await setup();
   const entry = (await instance.library.entries())[0];
-  const tool = instance.tools().find(t => t.name === 'qqextras_get_meme')!;
+  const tool = instance.tools().find(t => t.name === 'get_meme')!;
   const output = await tool.handler({ id: entry.id }, { role: 'main', log: nullLogger() });
   expect(output).toMatchObject({ text: expect.stringContaining('"sent":false'), blobs: [{ bytes: PNG, mime: 'image/png' }] });
   await expect(tool.handler({ id: '../secret' }, { role: 'main', log: nullLogger() })).rejects.toThrow('Unknown meme');

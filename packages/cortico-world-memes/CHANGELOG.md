@@ -1,4 +1,9 @@
-# `definition.ts` / `QqextrasWorld`
+# `definition.ts` / `MemesWorld`
+
+## 0.5.0
+
+- Rename the package and World to `cortico-world-memes` / `memes`; tools are `search_meme` and `get_meme`.
+- Provide a backed-up deployment migration for existing configuration, prompt overrides and image/vector data.
 
 ## 0.4.0
 

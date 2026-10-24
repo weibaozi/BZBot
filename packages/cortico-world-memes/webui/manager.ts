@@ -199,7 +199,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
     for (const [title, keys] of groups) {
       const section = h('section', '', 'port-settings-group'); section.append(h('h3', title)); workflow.append(button(title, async () => { section.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 'ghost'));
       for (const key of keys) {
-        const path = `worlds.qqextras.memes.${key}`; const schema = settings.schema.properties[path]; if (!schema) continue; const label = h('label', schema.title ?? key, 'port-field'); const input = h('input');
+        const path = `worlds.memes.memes.${key}`; const schema = settings.schema.properties[path]; if (!schema) continue; const label = h('label', schema.title ?? key, 'port-field'); const input = h('input');
         input.type = schema.type === 'boolean' ? 'checkbox' : ['integer', 'number'].includes(schema.type) ? 'number' : 'text'; input.setAttribute('aria-label', schema.title ?? key);
         if (input.type === 'checkbox') input.checked = settings.values[key] === true; else input.value = String(settings.values[key] ?? '');
         if (schema.minimum !== undefined) input.min = String(schema.minimum); if (schema.maximum !== undefined) input.max = String(schema.maximum); if (schema.type === 'number') input.step = '0.01';
@@ -212,7 +212,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
     }
     settingsBody.append(button('保存模式设置', async () => {
       const values: Record<string, string | number | boolean> = {}; for (const [path, input] of inputs) { if (!input.checkValidity()) { input.reportValidity(); return; } values[path] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value; }
-      await ctx.setConfig('world:qqextras', values); dirtySettings = false; report.textContent = '设置已保存，对下次调用生效。'; await refreshJob();
+      await ctx.setConfig('world:memes', values); dirtySettings = false; report.textContent = '设置已保存，对下次调用生效。'; await refreshJob();
     }, 'primary'), button('重新读取设置', async () => { if (dirtySettings) await confirmAction('放弃未保存设置', '重新读取已保存的配置。', async () => { dirtySettings = false; await loadSettings(); }); else await loadSettings(); }));
   }
   async function showTab(name: string) {

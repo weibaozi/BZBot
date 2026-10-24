@@ -34,7 +34,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
     let stage = 0;
     llm.fallback = () => {
       stage++;
-      if (stage === 1) return toolReply([{ name: 'qqextras_search_memes', args: { keywords: ['抱抱', '安慰'] } }]);
+      if (stage === 1) return toolReply([{ name: 'search_meme', args: { keywords: ['抱抱', '安慰'] } }]);
       if (stage === 2) {
         const messages = llm.calls.at(-1)!.messages;
         const history = JSON.stringify(messages);
@@ -43,7 +43,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
         expect(history).toContain('开心庆祝');
         expect(messages[0]).toEqual(llm.calls.at(-2)!.messages[0]);
         // The conversation model may choose a lower-ranked candidate using existing context.
-        return toolReply([{ name: 'qqextras_get_meme', args: { id: entry.id } }]);
+        return toolReply([{ name: 'get_meme', args: { id: entry.id } }]);
       }
       if (stage === 3) {
         const history = JSON.stringify(llm.calls.at(-1)?.messages);

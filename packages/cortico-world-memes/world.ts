@@ -4,20 +4,20 @@ import { fileURLToPath } from 'node:url';
 import type { ToolDef, World, WorldHost } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
 import type { WorldContext } from 'cortico/world.ts';
-import { qqextrasConfigGroup, type QqextrasConfigSection } from './config.ts';
+import { memesConfigGroup, type MemesConfigSection } from './config.ts';
 import { MemeLibrary } from './server/library.ts';
 import { MemeSearch, type Embed } from './server/search.ts';
 import { MemeSemantic, type Progress } from './server/semantic.ts';
 import { type Generate } from './server/models.ts';
 
-export const QQEXTRAS_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
-  { name: 'qqextras_search_memes', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags and ids; sends nothing. Call at most once per reply.',
+export const MEMES_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
+  { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags and ids; sends nothing. Call at most once per reply.',
     parameters: { type: 'object', properties: { keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'A few short phrases describing your intended expression, attitude, action and recipient relationship. Reuse the current conversation; do not copy its history or persona.' } }, required: ['keywords'] } },
-  { name: 'qqextras_get_meme', tags: ['read'], description: 'Read a selected meme image. Use its blob handle with the current channel\'s image-capable sending tool. This tool does not send.',
+  { name: 'get_meme', tags: ['read'], description: 'Read a selected meme image. Use its blob handle with the current channel\'s image-capable sending tool. This tool does not send.',
     parameters: { type: 'object', properties: { id: { type: 'string', description: 'Exact candidate id returned by search.' } }, required: ['id'] } },
 ];
-export class QqextrasWorld implements World {
-  readonly id = 'qqextras';
+export class MemesWorld implements World {
+  readonly id = 'memes';
   readonly library: MemeLibrary;
   readonly search: MemeSearch;
   readonly semantic: MemeSemantic;
@@ -25,8 +25,8 @@ export class QqextrasWorld implements World {
   private pending?: Promise<void>;
   private jobAbort?: AbortController;
   private job: { state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; operation?: string; result?: unknown; error?: string; progress?: Progress } = { state: 'idle' };
-  constructor(private ctx: WorldContext<QqextrasConfigSection>, embed?: Embed, generate?: Generate) {
-    this.library = new MemeLibrary(join(ctx.botDir, 'qqextras', 'memes'));
+  constructor(private ctx: WorldContext<MemesConfigSection>, embed?: Embed, generate?: Generate) {
+    this.library = new MemeLibrary(join(ctx.botDir, 'memes'));
     this.search = new MemeSearch(this.library, () => ({ url: ctx.cfg.memes.embeddingUrl, model: ctx.cfg.memes.embeddingModel,
       queryPrefix: ctx.cfg.memes.queryPrefix, key: ctx.secret('CORTICO_MEME_EMBEDDING_KEY') }), embed);
     this.semantic = new MemeSemantic(this.library, this.search, () => ctx.cfg.memes, () => ({
@@ -38,9 +38,9 @@ export class QqextrasWorld implements World {
   async start(_host: WorldHost) { this.abort = new AbortController(); }
   async stop() { this.abort.abort(); await this.pending; }
   tools(): ToolDef[] {
-    return QQEXTRAS_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
+    return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');
-      if (decl.name === 'qqextras_search_memes') {
+      if (decl.name === 'search_meme') {
         return JSON.stringify(await this.semantic.recall(args, AbortSignal.any([this.abort.signal, ...(context.signal ? [context.signal] : [])])));
       }
       if (typeof args.id !== 'string') throw new Error('id must be a string');
@@ -64,11 +64,11 @@ export class QqextrasWorld implements World {
   }
   webUi(language: Language = 'zh') {
     const t = (zh: string, en: string) => language.startsWith('zh') ? zh : en;
-    const override = join(this.ctx.botDir, 'prompts', 'QQEXTRAS.md');
+    const override = join(this.ctx.botDir, 'prompts', 'MEMES.md');
     return {
-      label: t('表情包管理', 'Meme manager'), config: [qqextrasConfigGroup(language)],
+      label: t('表情包管理', 'Meme manager'), config: [memesConfigGroup(language)],
       panels: [{ id: 'memes', title: t('表情包', 'Memes') }],
-      promptDocs: [{ key: 'worlds.qqextras.environment', title: t('表情使用预设模板', 'Meme usage template'), description: t('主模型结合当前对话判断是否配图，给出关键词，再从向量候选中选择。', 'The conversation model decides whether to use a meme, supplies keywords and chooses from vector candidates.'),
+      promptDocs: [{ key: 'worlds.memes.environment', title: t('表情使用预设模板', 'Meme usage template'), description: t('主模型结合当前对话判断是否配图，给出关键词，再从向量候选中选择。', 'The conversation model decides whether to use a meme, supplies keywords and chooses from vector candidates.'),
         path: existsSync(override) ? override : fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url)), deploymentPath: override, role: 'envPrompt' as const }],
       invoke: async (panel: string, method: string, args: unknown[]) => {
         if (panel !== 'memes') throw new Error('Unknown panel');
@@ -109,7 +109,7 @@ export class QqextrasWorld implements World {
           const { packId, directory } = arg;
           return this.launch('export', signal => this.library.exportZip(packId, directory, this.ctx.cfg.memes.pythonFile, signal));
         }
-        if (method === 'settings') return { schema: qqextrasConfigGroup(language).schema, values: this.ctx.cfg.memes,
+        if (method === 'settings') return { schema: memesConfigGroup(language).schema, values: this.ctx.cfg.memes,
           keys: Object.fromEntries(['EMBEDDING', 'VISION'].map(kind => [kind.toLowerCase(), Boolean(this.ctx.secret(`CORTICO_MEME_${kind}_KEY`))])) };
         if (method === 'key') {
           if (typeof arg.key !== 'string' || !arg.key.trim()) throw new Error('Key cannot be empty');
