@@ -1,13 +1,17 @@
 diff --git a/docs/providers.md b/docs/providers.md
-index 8c515ef..e4bad4c 100644
+index 8c515ef..3e9b048 100644
 --- a/docs/providers.md
 +++ b/docs/providers.md
-@@ -58,6 +58,25 @@ WebUI 编辑供应商下的模型时只改参数：共用字段写回供应商
+@@ -58,6 +58,29 @@ WebUI 编辑供应商下的模型时只改参数：共用字段写回供应商
  
  ## WebUI
  
 +「模型供应商」页按模型类型分页签,左栏是供应商,右栏是选中供应商的连接(地址与密钥)和这一类型的模型。
-+模型行可以启停、测试、删除;对话模型的设置打开端点编辑页,模型引用的名字与模型 id 在那里只读。
++模型行可以启停、测试、删除;对话模型的设置在弹窗里打开端点编辑页,只列这个模型自己的段落(生成参数、计价、模块段落与高级协议),
++名字、类型、地址、密钥和测试留在供应商页。
++没有地址段落的模块(如账号登录的模块)新建时不填地址和密钥,供应商页在连接的位置挂模块自己的面板,
++作用域 `instance` 是供应商名;面板调用带供应商保存的共用字段,服务端把它当作已保存的连接,
++`host.resource` 对象在多次调用之间沿用,登录这类状态留在供应商目录下,它的模型共用。
 +获取模型列表后可从列表添加模型,也可填写模型 id;对话模型按模块档位与下面的生成默认值建好,上下文与图片输入取列表给出的值。
 +对话页签顶部切换当前部署的对话模型。旧格式端点在这里显示为只有一个对话模型的供应商,第一次加模型时转换。
 +
@@ -60,6 +64,19 @@ index c32a692..d78019e 100644
  writeFileSync(join(tmpData, 'config.json'), JSON.stringify({ activeProvider: devCfg.activeProvider }));
  const devProviders=new ProviderSettings(devCfg, devRegistry,join(tmpData,'config.json'),devProvidersDir);
  const devHub = new ProviderHub(devCfg, devRegistry, devProviders, join(tmpData, 'config.json'), devProvidersDir);
+diff --git a/src/providers/README.md b/src/providers/README.md
+index fe1aa85..24fb1d1 100644
+--- a/src/providers/README.md
++++ b/src/providers/README.md
+@@ -117,6 +117,7 @@ function_call / function_call_output 出线时去掉可选的 `id`,`call_id` 不
+ `ProviderWebUiHost.editing` 表示这个实例来自还没保存的表单,模块据此拒绝运行时副作用,
+ `host.save` 把配置交回浏览器暂存。`ProviderRegistry.previewRegistry` 按一份条目造注册表,实例不进
+ 运行实例缓存,浏览器刚输入的密钥作为覆盖值排在进程环境与端点 `.env` 之前;测试与模型列表带
+-`{ entry, secretValue }` 时走它。
++`{ entry, secretValue }` 时走它。`shared` 为真时它借用本注册表的 `host.resource` 对象:还没有模型的供应商
++按原样的共用字段预览时用,登录的待决状态因此跨请求保留。
+ 
+ 连接列表的 usage 包含其他部署的选用记录及运行锁状态，排除当前部署。运行状态按部署配置的 paths.data（缺省使用 Core 默认值）检查实例锁，不代表供应商正在处理请求，也不建立供应商独占锁。
 diff --git a/src/providers/base.ts b/src/providers/base.ts
 index 11cf127..c297d93 100644
 --- a/src/providers/base.ts
@@ -129,6 +146,46 @@ index 4bc5a5b..49c6884 100644
    serviceTiers: [],
    validateEntry: (entry, language) => {
      const S = text(language);
+diff --git a/src/providers/registry.ts b/src/providers/registry.ts
+index 5d835c8..047c829 100644
+--- a/src/providers/registry.ts
++++ b/src/providers/registry.ts
+@@ -52,13 +52,13 @@ export function providerModule(kind: string): ProviderModule {
+ 
+ export class ProviderRegistry {
+   private readonly instances = new Map<string, { key: string; value: ProviderInstance }>();
+-  private readonly resources = new Map<string, unknown>();
+   constructor(
+     private readonly entries: () => Record<string, LLMProviderEntry>,
+     private readonly host: ProviderHostBase,
+     private readonly modules: readonly ProviderModule[] = providerModules,
+     /** Secrets read before the process environment and the endpoint `.env`; preview registries carry the typed, unsaved key here. */
+     private readonly secretOverrides: Readonly<Record<string, string>> = {},
++    private readonly resources = new Map<string, unknown>(),
+   ) {}
+ 
+   private module(kind: string): ProviderModule {
+@@ -69,14 +69,15 @@ export class ProviderRegistry {
+ 
+   /**
+    * A registry over one detached entry. Its instances never enter the live cache; `secrets`
+-   * are the values the WebUI holds but has not written to the endpoint's `.env`.
++   * are the values the WebUI holds but has not written to the endpoint's `.env`. `shared` lends
++   * it this registry's `host.resource` objects, for a saved connection previewed under its own name.
+    */
+-  previewRegistry(name: string, entry: LLMProviderEntry, secrets: Readonly<Record<string, string>> = {}): ProviderRegistry {
+-    return new ProviderRegistry(() => ({ [name]: entry }), this.host, this.modules, secrets);
++  previewRegistry(name: string, entry: LLMProviderEntry, secrets: Readonly<Record<string, string>> = {}, shared = false): ProviderRegistry {
++    return new ProviderRegistry(() => ({ [name]: entry }), this.host, this.modules, secrets, shared ? this.resources : undefined);
+   }
+ 
+-  preview(name: string, entry: LLMProviderEntry): ProviderInstance {
+-    return this.previewRegistry(name, entry).resolve(name);
++  preview(name: string, entry: LLMProviderEntry, shared = false): ProviderInstance {
++    return this.previewRegistry(name, entry, {}, shared).resolve(name);
+   }
+ 
+   resolve(name: string): ProviderInstance {
 diff --git a/src/providers/store.ts b/src/providers/store.ts
 index f58a1e3..abb44a3 100644
 --- a/src/providers/store.ts
@@ -178,7 +235,7 @@ index f58a1e3..abb44a3 100644
 +  return flattenSource(source, file);
 +}
 diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
-index 99486bb..c2e30f3 100644
+index 99486bb..ded91c2 100644
 --- a/src/providers/webui/hub.ts
 +++ b/src/providers/webui/hub.ts
 @@ -9,8 +9,9 @@ import { readJsonObject, updateJsonObject, writeSecretFile } from '../../config-
@@ -201,7 +258,40 @@ index 99486bb..c2e30f3 100644
        temperatureNote: module.localize?.(language)?.temperatureNote ?? module.temperatureNote,
        sections: this.sections(module.id, language),
      }));
-@@ -286,6 +288,190 @@ export class ProviderHub {
+@@ -135,13 +137,15 @@ export class ProviderHub {
+     if (!module?.webUi) throw hubError(S => S.modulePanelMissing);
+     this.refresh();
+     const current = this.config.providers[name];
+-    const persisted = !!current && JSON.stringify(current) === JSON.stringify(entry);
++    // 还没有模型的供应商没有端点;它的共用字段原样传回时也算已保存,登录这类状态记在供应商目录下。
++    const source = current ? undefined : this.sourceConnection(name);
++    const persisted = !!(current ?? source) && JSON.stringify(current ?? source) === JSON.stringify(entry);
+     let draft = structuredClone(entry);
+     const contribution = module.webUi({ language, editing: !persisted,
+       entries: () => [{ name, entry: draft }],
+       instance: requested => {
+         if (requested !== name) throw hubError(S => S.foreignRequest);
+-        return persisted ? this.registry.resolve(name) : this.registry.preview(name, draft);
++        return persisted && current ? this.registry.resolve(name) : this.registry.preview(name, draft, persisted);
+       },
+       save: (requested, next) => {
+         if (requested !== name || next.kind !== entry.kind) throw hubError(S => S.foreignRequest);
+@@ -151,6 +155,14 @@ export class ProviderHub {
+     const result = await contribution.invoke?.(panel, method, args);
+     return { result, entry: draft };
+   }
++  /** 供应商格式目录的共用字段,与 `sources()` 给出的 `connection` 相同;旧格式与模型引用没有。 */
++  private sourceConnection(name: string): LLMProviderEntry | undefined {
++    if (modelOf(name) !== null) return undefined;
++    const read = readSource(this.root, name);
++    if (!read || read.legacy) return undefined;
++    const { models: _models, ...shared } = read.source;
++    return shared as LLMProviderEntry;
++  }
+   private references(name: string): string[] {
+     const files = new Set([this.file]);
+     const parent = dirname(this.root);
+@@ -286,6 +298,190 @@ export class ProviderHub {
        rmSync(tomb, { recursive: true, force: true });
      });
    }
@@ -392,7 +482,7 @@ index 99486bb..c2e30f3 100644
    /**
     * Probe (`test`) or list models (`models`). With `draft`, the request goes through an instance
     * built from the browser's entry and typed key; nothing is written, and `name` may not exist yet.
-@@ -303,7 +489,10 @@ export class ProviderHub {
+@@ -303,7 +499,10 @@ export class ProviderHub {
      if (!draft.entry || typeof draft.entry !== 'object') throw hubError(S => S.bodyRequired);
      const module = this.modules.find(m => m.id === draft.entry.kind);
      if (!module) throw hubError(S => S.moduleMissing);
@@ -404,7 +494,7 @@ index 99486bb..c2e30f3 100644
      const registry = this.registry.previewRegistry(name, entry, entry.secret && draft.secretValue ? { [entry.secret]: draft.secretValue } : {});
      if (action === 'models') {
        const instance = registry.resolve(name);
-@@ -317,6 +506,11 @@ export class ProviderHub {
+@@ -317,6 +516,11 @@ export class ProviderHub {
    }
  }
  
@@ -589,7 +679,7 @@ index dd7e193..e20da21 100644
    foreignInstance: '供應實例不屬於此模組',
    unknownPanel: '未知 Provider 面板',
 diff --git a/src/web/client/features/providers/detail.ts b/src/web/client/features/providers/detail.ts
-index 526127c..bbecfab 100644
+index 526127c..7d322a3 100644
 --- a/src/web/client/features/providers/detail.ts
 +++ b/src/web/client/features/providers/detail.ts
 @@ -2,12 +2,13 @@ import type { FeatureContext } from '../feature.ts';
@@ -607,7 +697,7 @@ index 526127c..bbecfab 100644
  
  export interface DetailController { dispose(): void; }
  interface Options {
-@@ -15,7 +16,9 @@ interface Options {
+@@ -15,7 +16,11 @@ interface Options {
    /** Every edit; `dirty` is false when the form again equals the saved connection. */
    changed(editing: Editing, invalid: boolean, dirty: boolean): void;
    onSaved(name: string, select?: boolean): Promise<void>; cancelled(): Promise<void>;
@@ -615,10 +705,12 @@ index 526127c..bbecfab 100644
 +  deleted(): Promise<void>;
 +  /** Offers a copy of a saved connection under a new name; absent, the editor shows no duplicate action. */
 +  duplicate?(editing: Editing): Promise<void>;
++  /** Only the model's own settings, as for a model under a provider source; the source page holds the rest. */
++  modelOnly?: boolean;
  }
  type Section = Module['sections'][number];
  type Spec = NonNullable<Detail['entry']['spec']>;
-@@ -23,6 +26,10 @@ type Spec = NonNullable<Detail['entry']['spec']>;
+@@ -23,6 +28,10 @@ type Spec = NonNullable<Detail['entry']['spec']>;
  const snapshot = (editing: Editing) => JSON.stringify({ name: editing.name, entry: editing.entry, secretValue: editing.secretValue });
  /** Protocol knobs the editor keeps under the protocol block; the rest of a module's scalars belong to its own sections. */
  const PROTOCOL_FIELDS = ['endpointPath', 'extraHeaders', 'extraBody'];
@@ -629,7 +721,7 @@ index 526127c..bbecfab 100644
  /**
   * One connection's editor. Sections come from `module.sections` in declared order: a `builtin`
   * names a block drawn here, the rest are the module's own panels, mounted with their edits staged
-@@ -48,6 +55,17 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -48,6 +57,17 @@ export async function mountDetail(options: Options): Promise<DetailController> {
    let panelHost: ReturnType<NonNullable<FeatureContext['webUiPageHost']>> | null = null;
    /** The model block's way of showing a spec a module panel changed. */
    let syncSpec: (() => void) | null = null;
@@ -647,16 +739,19 @@ index 526127c..bbecfab 100644
    /** A saved connection shows the discard button only while the form differs from what is saved. */
    let cancel: HTMLButtonElement | null = null;
    const change = () => {
-@@ -62,6 +80,8 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -62,6 +82,11 @@ export async function mountDetail(options: Options): Promise<DetailController> {
    };
    /** Preview name for an unsaved connection; the server resolves secrets by it. */
    const identity = saved?.name ?? 'draft';
-+  /** A model under a provider source: its name and model id are fixed here; the source's model list adds and removes models. */
-+  const sourceModel = !!saved && modelOf(saved.name) !== null;
++  /**
++   * A model under a provider source: its name and model id are fixed, and the source page holds
++   * the address, key and model list, so the editor shows only this model's own settings.
++   */
++  const sourceModel = !!saved && (options.modelOnly === true || modelOf(saved.name) !== null);
    /** The probe and the model list run on what the form holds, key included, before anything is saved. */
    const draftBody = () => ({ entry: editing.entry, ...(editing.secretValue ? { secretValue: editing.secretValue } : {}) });
    const disposePanels = () => { for (const handle of panelHandles.splice(0)) handle.dispose(); };
-@@ -116,13 +136,17 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -116,13 +141,17 @@ export async function mountDetail(options: Options): Promise<DetailController> {
    };
    function endpointBlock(box: HTMLElement, section: Section) {
      const body = block(box, section, true);
@@ -676,13 +771,15 @@ index 526127c..bbecfab 100644
        test.disabled = true;
        testResult.textContent = '';
        try {
-@@ -141,21 +165,40 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -141,21 +170,42 @@ export async function mountDetail(options: Options): Promise<DetailController> {
    }
    function modelBlock(box: HTMLElement, section: Section, module: Module, spec: Spec) {
      const body = block(box, section, true);
 -    const modelInput = field(body, 'model', S.model, spec.model, value => { spec.model = value; }, value => value.trim() ? null : S.required);
 +    const modelInput = field(body, 'model', S.model, spec.model, value => { spec.model = value; refreshReasoning?.(); }, value => value.trim() ? null : S.required);
 +    modelInput.readOnly = sourceModel;
++    // The dialog's title already names the model.
++    (modelInput.closest('.connection-field') as HTMLElement).hidden = sourceModel;
      let listedModels: ListedModel[] = [];
      let contextInput: HTMLInputElement | null = null;
      const windowNote = ui.msgline();
@@ -724,7 +821,7 @@ index 526127c..bbecfab 100644
        windowNote.textContent = listedModels.length && !listed?.contextWindow ? S.catalogNoWindow : '';
        outputNote.textContent = listed?.maxOutputTokens ? S.catalogMaxOutput(listed.maxOutputTokens) : '';
      };
-@@ -167,30 +210,41 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -167,30 +217,41 @@ export async function mountDetail(options: Options): Promise<DetailController> {
        noteCatalog();
      }, opts);
      const fetchResult = ui.msgline();
@@ -783,7 +880,7 @@ index 526127c..bbecfab 100644
      for (const [name, label] of [['temperature', S.temperature], ['maxTokens', S.maxTokens], ['contextWindow', S.context]] as const) {
        const input = field(body, name, label, editing.raw[name] ?? String(spec[name] ?? ''), value => {
          editing.raw[name] = value; if (!value) delete spec[name]; else spec[name] = Number(value);
-@@ -200,6 +254,16 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -200,6 +261,16 @@ export async function mountDetail(options: Options): Promise<DetailController> {
          if (!Number.isFinite(number) || !(name === 'temperature' ? number >= 0 && number <= 2 : Number.isInteger(number) && number > 0)) return S.invalidNumber;
          return name === 'contextWindow' && spec.maxTokens !== undefined && number <= spec.maxTokens ? S.contextAboveOutput : null;
        }, 'number');
@@ -800,7 +897,7 @@ index 526127c..bbecfab 100644
        if (name === 'contextWindow') contextInput = input;
        if (name === 'maxTokens') {
          body.append(outputNote);
-@@ -216,7 +280,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -216,7 +287,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
      images.setAttribute('role', 'switch'); images.classList.add('connection-switch');
      images.addEventListener('change', () => { editing.entry.multimodal = images.checked; change(); }, opts);
      const imagesField = ui.field(S.images, images); imagesField.classList.add('connection-toggle'); body.append(imagesField);
@@ -809,26 +906,39 @@ index 526127c..bbecfab 100644
    }
    function pricingBlock(box: HTMLElement, section: Section) {
      const body = block(box, section, true);
-@@ -255,13 +319,14 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -241,7 +312,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+   }
+   function protocolBlock(box: HTMLElement, section: Section, groups: ConfigGroup[]) {
+     const body = block(box, section, true);
+-    field(body, 'secret', S.secret, editing.entry.secret ?? '', value => { if (value) editing.entry.secret = value; else delete editing.entry.secret; });
++    if (!sourceModel) field(body, 'secret', S.secret, editing.entry.secret ?? '', value => { if (value) editing.entry.secret = value; else delete editing.entry.secret; });
+     for (const group of groups) for (const [path, property] of Object.entries(group.schema.properties ?? {})) {
+       const suffix = path.slice(`providers.${identity}.`.length);
+       const at = entryPath(suffix);
+@@ -255,15 +326,17 @@ export async function mountDetail(options: Options): Promise<DetailController> {
    }
    async function render() {
      const gen = ++rendering;
 -    disposePanels(); syncSpec = null;
 +    disposePanels(); syncSpec = null; refreshReasoning = null; autoFetch = null; focusModel = null;
      errors.clear(); form.replaceChildren();
-     const identityCard = ui.sheet({ title: S.basic }); identityCard.el.classList.add('connection-identity'); form.append(identityCard.el);
+-    const identityCard = ui.sheet({ title: S.basic }); identityCard.el.classList.add('connection-identity'); form.append(identityCard.el);
++    const identityCard = ui.sheet({ title: S.basic }); identityCard.el.classList.add('connection-identity');
++    if (!sourceModel) form.append(identityCard.el);
      const basic = identityCard.body;
 -    field(basic, 'name', S.name, editing.name, value => { editing.name = value; }, value => value === saved?.name ? null : validateProviderName(value) ? S.nameHint : null)
 -      .placeholder = S.newName;
--    basic.append(ui.msgline(S.nameHint));
 +    const nameInput = field(basic, 'name', S.name, editing.name, value => { editing.name = value; }, value => value === saved?.name ? null : validateProviderName(value) ? S.nameHint : null);
 +    nameInput.placeholder = S.newName;
-+    nameInput.readOnly = sourceModel;
-+    if (!sourceModel) basic.append(ui.msgline(S.nameHint));
+     basic.append(ui.msgline(S.nameHint));
      const selectedModule = modules.find(module => module.id === editing.entry.kind);
-     if (saved) {
+-    if (saved) {
++    if (sourceModel) errors.delete('name');
++    else if (saved) {
        const module = ui.input({ value: selectedModule?.title ?? editing.entry.kind });
-@@ -273,7 +338,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+       module.readOnly = true;
+       module.setAttribute('aria-label', S.module); module.classList.add('connection-module-readonly');
+@@ -273,7 +346,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
        const select = ui.select({ value: editing.entry.kind, options: [{ value: '', label: '—' }, ...modules.map(module => ({ value: module.id, label: module.title }))],
          onChange: kind => {
            const module = modules.find(module => module.id === kind);
@@ -837,23 +947,44 @@ index 526127c..bbecfab 100644
            editing.raw = {}; change(); run(render);
          } });
        select.setAttribute('aria-label', S.module);
-@@ -291,12 +356,14 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+@@ -285,21 +358,24 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+     }
+     const spec = editing.entry.spec ??= { model: '', thinking: false };
+     const actions = ui.h('div', 'connection-actions');
+-    if (saved) {
++    if (saved && !sourceModel) {
+       actions.append(ui.button(S.remove, { variant: 'danger', onClick: ev => run(async () => {
+         const current = await get<Detail>(connectionPath(saved.name), opts);
          if (current.references.length) { await ui.confirm({ title: S.remove, body: S.referenced + current.references.join(', ') }); return; }
          if (!(await ui.confirm({ title: S.remove, body: S.deleteConfirm, danger: true }))) return;
          await post(connectionPath(saved.name) + '/delete', { expectedRevision: saved.revision }, opts); await options.deleted();
 -      }, ev.currentTarget as HTMLElement) }), ui.button(S.duplicate, { onClick: ev => run(() => options.duplicate({ original: null, copyFrom: { name: saved.name, revision: saved.revision }, name: (validateProviderName(saved.name) ? 'Connection' : saved.name) + '-Copy', entry: structuredClone(saved.entry), secretValue: '', raw: {} }), ev.currentTarget as HTMLElement) }));
 +      }, ev.currentTarget as HTMLElement) }));
 +      const duplicate = options.duplicate;
-+      if (!sourceModel && duplicate) actions.append(ui.button(S.duplicate, { onClick: ev => run(() => duplicate({ original: null, copyFrom: { name: saved.name, revision: saved.revision }, name: (validateProviderName(saved.name) ? 'Connection' : saved.name) + '-Copy', entry: structuredClone(saved.entry), secretValue: '', raw: {} }), ev.currentTarget as HTMLElement) }));
++      if (duplicate) actions.append(ui.button(S.duplicate, { onClick: ev => run(() => duplicate({ original: null, copyFrom: { name: saved.name, revision: saved.revision }, name: (validateProviderName(saved.name) ? 'Connection' : saved.name) + '-Copy', entry: structuredClone(saved.entry), secretValue: '', raw: {} }), ev.currentTarget as HTMLElement) }));
      }
      cancel = ui.button(S.cancel, { onClick: () => run(() => options.cancelled()) });
      cancel.hidden = !!saved && !dirty();
      actions.append(ui.h('span', 'grow'), cancel, ui.button(S.save, { variant: 'primary', onClick: ev => run(() => save(), ev.currentTarget as HTMLElement) }), report);
 -    form.append(actions, ui.h('div', 'connection-shared', S.shared), ui.h('div', 'connection-shared', S.draftNote));
-+    form.append(actions, ui.h('div', 'connection-shared', S.shared));
++    form.append(actions);
++    if (!sourceModel) form.append(ui.h('div', 'connection-shared', S.shared));
      if (!selectedModule) return;
      const flow = ui.h('div', 'connection-flow');
-     identityCard.el.after(flow);
+-    identityCard.el.after(flow);
++    if (sourceModel) form.prepend(flow); else identityCard.el.after(flow);
+     const groups = (await post<ConfigGroup[]>('/api/provider-modules/config', { name: identity, entry: editing.entry }, opts)).filter(group => !group.id.endsWith('.connection'));
+     if (gen !== rendering || lifecycle.disposed) return;
+     const ownSections = selectedModule.sections.some(section => !section.builtin);
+@@ -307,7 +383,7 @@ export async function mountDetail(options: Options): Promise<DetailController> {
+     for (const section of selectedModule.sections) {
+       const box = ui.h('div', 'connection-step'); flow.append(box);
+       switch (section.builtin) {
+-        case 'connection-endpoint': endpointBlock(box, section); break;
++        case 'connection-endpoint': if (!sourceModel) endpointBlock(box, section); else box.remove(); break;
+         case 'connection-model':
+           modelBlock(box, section, selectedModule, spec);
+           if (!ownSections) for (const group of groups) groupBlock(box, group);
 diff --git a/src/web/client/features/providers/drafts.ts b/src/web/client/features/providers/drafts.ts
 deleted file mode 100644
 index 2bcccef..0000000
@@ -957,10 +1088,10 @@ index 0000000..e71b7f7
 +  return { el: box, refresh, valid: () => select.getAttribute('aria-invalid') !== 'true' };
 +}
 diff --git a/src/web/client/features/providers/index.ts b/src/web/client/features/providers/index.ts
-index 21daada..42f6d62 100644
+index 21daada..4d9f67f 100644
 --- a/src/web/client/features/providers/index.ts
 +++ b/src/web/client/features/providers/index.ts
-@@ -1,209 +1,301 @@
+@@ -1,209 +1,362 @@
  import { pageIntro } from '../../ui/page.ts';
  import { icon } from '../../ui/icons.ts';
 -import { NEW_DRAFT_ID, providerDrafts } from './drafts.ts';
@@ -980,10 +1111,12 @@ index 21daada..42f6d62 100644
 +const TYPES: readonly ModelType[] = ['chat', 'embedding', 'rerank', 'stt', 'tts'];
 +/** A context window as the model list shows it: 1000000 → 1M, 32768 → 33K. */
 +const compactTokens = (tokens: number) => tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : String(tokens);
++/** A module without the address block signs in through its own panels instead of an address and key. */
++const signsIn = (module: Module | undefined) => !!module && !module.sections.some(section => section.builtin === 'connection-endpoint');
 +
 +/**
 + * The model hub: tabs by model type, sources on the left, the selected source's connection and
-+ * models on the right. A chat model's settings open the connection editor in place of the list.
++ * models on the right. A chat model's settings open in a dialog with only that model's fields.
 + */
  export async function mountProviders(ctx: FeatureContext): Promise<void> {
    const { ui, root } = ctx;
@@ -1013,9 +1146,13 @@ index 21daada..42f6d62 100644
 -    kind: HTMLElement; activate: HTMLButtonElement; erase: HTMLButtonElement;
 +  let type: ModelType = 'chat';
 +  let selected = state.sources.find(source => source.models.some(model => model.active))?.name ?? state.sources[0]?.name ?? '';
-+  /** `null`: the source panel; a reference: that chat model's editor; `''`: the new-source form. */
-+  let editing: string | null = selected ? null : '';
-+  let editor: DetailController | null = null;
++  /** The new-source form stands in place of the source panel. */
++  let creating = !selected;
++  /** The open model dialog, closed on a new one and with the page. */
++  let dialog: { close(): void } | null = null;
++  /** Module panels on the source page, remounted with it. */
++  let panelHost: ReturnType<NonNullable<FeatureContext['webUiPageHost']>> | null = null;
++  const panelHandles: Array<{ dispose(): void }> = [];
 +  /** Fetched upstream lists, per source; they survive tab switches and refreshes. */
 +  const listed = new Map<string, ListedModel[]>();
 +  const run = (work: () => Promise<unknown>, line = report) => {
@@ -1030,7 +1167,7 @@ index 21daada..42f6d62 100644
 +  const index = ui.h('div', 'connection-index');
 +  const list = ui.h('div', 'model-hub-sources');
 +  const detail = ui.h('div', 'connection-detail');
-+  const add = ui.button(S.create, { variant: 'primary', onClick: () => { selected = ''; openEditor(''); } });
++  const add = ui.button(S.create, { variant: 'primary', onClick: () => { selected = ''; openCreate(); } });
 +  const indexHead = ui.h('div', 'model-hub-index-head'); indexHead.append(ui.h('h3', '', S.sources), add);
 +  index.append(indexHead, list); layout.append(index, detail);
 +  root.append(tabs.el, activeBar, report, layout);
@@ -1053,7 +1190,7 @@ index 21daada..42f6d62 100644
 +  function paintList() {
 +    list.replaceChildren(...state.sources.map(item => {
 +      const card = ui.h('button', 'model-hub-source'); card.type = 'button'; card.dataset.source = item.name;
-+      card.classList.toggle('is-selected', item.name === selected && editing !== '');
++      card.classList.toggle('is-selected', item.name === selected && !creating);
 +      card.classList.toggle('is-unsupported', !item.modelTypes.includes(type));
 +      const count = item.models.filter(model => model.type === type).length;
 +      const name = ui.h('span', 'model-hub-source-name', item.name);
@@ -1061,7 +1198,7 @@ index 21daada..42f6d62 100644
 +      card.append(name, facts);
 +      if (count) card.append(ui.chip(String(count)));
 +      if (item.models.some(model => model.active)) card.append(ui.pill(S.active, 'on'));
-+      card.addEventListener('click', () => { selected = item.name; editing = null; editor?.dispose(); editor = null; paint(); }, opts);
++      card.addEventListener('click', () => { selected = item.name; creating = false; paint(); }, opts);
 +      return card;
 +    }));
 +    if (!state.sources.length) list.append(ui.msgline(S.emptyHint));
@@ -1132,7 +1269,29 @@ index 21daada..42f6d62 100644
 -      if (identity === NEW_DRAFT_ID) rows.delete(identity); else rows.set(identity, item as Connection);
 -    }
 +    paintActive(); paintList();
-+    if (editing === null) paintSource();
++    if (!creating) paintSource();
++  }
++
++  /** The selected source: its connection, its models of the current type and what the upstream lists. */
++  function paintSource() {
++    for (const handle of panelHandles.splice(0)) handle.dispose();
++    const item = source();
++    if (!item) { detail.replaceChildren(ui.h('h3', '', S.empty), ui.msgline(S.emptyHint)); return; }
++    const module = moduleOf(item.kind);
++    const head = ui.h('div', 'model-hub-head');
++    const title = ui.h('div'); title.append(ui.h('h3', '', item.name), ui.h('div', 'model-hub-sub', `${item.moduleTitle} · ${item.baseUrl}`));
++    const erase = ui.button(S.removeSource, { variant: 'danger', onClick: () => run(async () => {
++      if (!(await ui.confirm({ title: S.removeSource, body: S.deleteConfirm, danger: true }))) return;
++      await post(sourcePath(item.name) + '/delete', { expectedRevision: item.revision }, opts);
++      listed.delete(item.name); selected = state.sources.find(other => other.name !== item.name)?.name ?? ''; await refresh();
++    }, line) });
++    const line = ui.msgline();
++    head.append(title, ui.h('span', 'grow'), erase);
++    const parts: HTMLElement[] = [head, line];
++    if (item.legacy) parts.push(ui.msgline(S.legacyNote));
++    parts.push(...(signsIn(module) ? accountSheets(item, module!) : [connectionSheet(item)]));
++    parts.push(modelsSheet(item, module));
++    detail.replaceChildren(...parts);
    }
 -  /** 删除按钮先伸成「确认删除」,第二次点击才动手;点别处或 Esc 收回。 */
 -  function eraseButton(identity: string): HTMLButtonElement {
@@ -1152,37 +1311,6 @@ index 21daada..42f6d62 100644
 -    }, opts);
 -    return el;
 +
-+  /** The selected source: its connection, its models of the current type and what the upstream lists. */
-+  function paintSource() {
-+    const item = source();
-+    if (!item) { detail.replaceChildren(ui.h('h3', '', S.empty), ui.msgline(S.emptyHint)); return; }
-+    const module = moduleOf(item.kind);
-+    const head = ui.h('div', 'model-hub-head');
-+    const title = ui.h('div'); title.append(ui.h('h3', '', item.name), ui.h('div', 'model-hub-sub', `${item.moduleTitle} · ${item.baseUrl}`));
-+    const erase = ui.button(S.removeSource, { variant: 'danger', onClick: () => run(async () => {
-+      if (!(await ui.confirm({ title: S.removeSource, body: S.deleteConfirm, danger: true }))) return;
-+      await post(sourcePath(item.name) + '/delete', { expectedRevision: item.revision }, opts);
-+      listed.delete(item.name); selected = state.sources.find(other => other.name !== item.name)?.name ?? ''; await refresh();
-+    }, line) });
-+    const line = ui.msgline();
-+    head.append(title, ui.h('span', 'grow'), erase);
-+    const parts: HTMLElement[] = [head, line];
-+    if (item.legacy) parts.push(ui.msgline(S.legacyNote));
-+    parts.push(connectionSheet(item));
-+    parts.push(modelsSheet(item, module));
-+    detail.replaceChildren(...parts);
-   }
--  async function remove(identity: string): Promise<void> {
--    if (identity === NEW_DRAFT_ID) {
--      drafts.remove(NEW_DRAFT_ID); newDraft = null; invalid.delete(identity);
--      if (selected === NEW_DRAFT_ID) await select(fallback(), true); else paint();
--      return;
--    }
--    await post(connectionPath(identity) + '/delete', { expectedRevision: rows.get(identity)?.revision }, opts);
--    drafts.remove(identity); invalid.delete(identity);
--    await refresh();
--    if (selected === identity) await select(fallback(), true);
-+
 +  function connectionSheet(item: Source): HTMLElement {
 +    const card = ui.foldSheet('model-hub-connection', { title: S.connection, defaultOpen: item.secretConfigured === 'none' });
 +    const url = ui.input({ value: item.baseUrl }); url.setAttribute('aria-label', S.url);
@@ -1197,22 +1325,35 @@ index 21daada..42f6d62 100644
 +    card.body.append(ui.field(S.url, url), ui.field(S.key, key), actions, ui.msgline(S.shared));
 +    return card.el;
    }
--  async function refresh() { state = await get<HubState>('/api/providers', opts); paint(); }
--  async function select(identity: string, force = false): Promise<void> {
--    if (!force && identity === selected) return;
--    const gen = ++renderId;
--    controller?.dispose(); controller = null;
--    // The disposed editor stays visible until its replacement is ready and takes no input meanwhile.
--    detailRoot.toggleAttribute('inert', true);
--    selected = identity; paint();
--    if (!identity) {
--      detailRoot.toggleAttribute('inert', false);
--      detailRoot.replaceChildren(ui.h('h3', '', S.empty), ui.msgline(S.emptyHint), ui.button(S.create, { onClick: () => run(create) }));
+-  async function remove(identity: string): Promise<void> {
+-    if (identity === NEW_DRAFT_ID) {
+-      drafts.remove(NEW_DRAFT_ID); newDraft = null; invalid.delete(identity);
+-      if (selected === NEW_DRAFT_ID) await select(fallback(), true); else paint();
 -      return;
--    }
--    try { await openDetail(identity, gen); } catch (error) {
--      if (gen === renderId) { detailRoot.replaceChildren(); detailRoot.toggleAttribute('inert', false); }
--      throw error;
++
++  /** The module's own panels, such as a sign-in, on the source's saved fields; they stage nothing. */
++  function accountSheets(item: Source, module: Module): HTMLElement[] {
++    const host = ctx.webUiPageHost;
++    if (!host) return [];
++    return module.sections.filter(section => !section.builtin).map(section => {
++      const card = ui.sheet({ title: section.title, desc: section.description });
++      card.el.classList.add('model-hub-account');
++      run(async () => {
++        panelHost ??= host({ root: ui.h('div'), route: () => ['providers', selected] });
++        await panelHost.load();
++        if (!card.el.isConnected) return;
++        const handle = await panelHost.mountConnection(`llm:${item.kind}`, section.id, card.body, { instance: item.name }, context => ({
++          ...context,
++          setConfig: async () => { throw new Error('Foreign connection field'); },
++          invoke: async <T>(method: string, args?: unknown[]): Promise<T> =>
++            (await post<{ result: T }>('/api/provider-modules/preview', { name: item.name, entry: item.connection, panel: context.panelId, method, args }, opts)).result,
++          refresh: async () => {},
++        }));
++        if (card.el.isConnected) panelHandles.push(handle); else handle.dispose();
++      });
++      return card.el;
++    });
++  }
 +
 +  function modelsSheet(item: Source, module: Module | undefined): HTMLElement {
 +    const card = ui.sheet({ title: S.models });
@@ -1266,6 +1407,8 @@ index 21daada..42f6d62 100644
 +        paintRows();
 +      } finally { fetch.disabled = false; }
      }
+-    await post(connectionPath(identity) + '/delete', { expectedRevision: rows.get(identity)?.revision }, opts);
+-    drafts.remove(identity); invalid.delete(identity);
 +    paintRows();
 +    // A source with a saved key lists its models once, when it is first shown.
 +    if (!listed.has(item.name) && item.secretConfigured !== 'none') run(() => loadModels(), fetchLine);
@@ -1303,7 +1446,7 @@ index 21daada..42f6d62 100644
 +    }, result));
 +    const actions = ui.h('div', 'model-hub-model-actions');
 +    actions.append(toggle, test);
-+    if (model.type === 'chat') actions.append(iconButton('settings', S.modelSettings, () => openEditor(model.ref)));
++    if (model.type === 'chat') actions.append(iconButton('settings', S.modelSettings, () => openModel(model.ref)));
 +    actions.append(iconButton('trash', S.removeModel, () => run(async () => {
 +      if (!(await ui.confirm({ title: S.removeModel, body: model.ref, danger: true }))) return;
 +      await post(sourceModelPath(item.name, model.id) + '/delete', { expectedRevision: item.revision }, opts); await refresh();
@@ -1318,6 +1461,43 @@ index 21daada..42f6d62 100644
 +    button.append(icon(doc, name));
 +    button.addEventListener('click', onClick, opts);
 +    return button;
++  }
++
++  /** New models of the current type; a chat model starts from the module's generation defaults and what the list states. */
++  async function addModel(item: Source, module: Module | undefined, model: { id: string; contextWindow?: number; inputImages?: boolean }) {
++    const fields = type === 'chat'
++      ? { spec: { ...newModelSpec(module), model: model.id, ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}) }, ...(model.inputImages !== undefined ? { multimodal: model.inputImages } : {}) }
++      : {};
++    await post(sourcePath(item.name) + '/models', { expectedRevision: item.revision, models: [{ id: model.id, type, ...fields }] }, opts);
+     await refresh();
+-    if (selected === identity) await select(fallback(), true);
+   }
+-  async function refresh() { state = await get<HubState>('/api/providers', opts); paint(); }
+-  async function select(identity: string, force = false): Promise<void> {
+-    if (!force && identity === selected) return;
+-    const gen = ++renderId;
+-    controller?.dispose(); controller = null;
+-    // The disposed editor stays visible until its replacement is ready and takes no input meanwhile.
+-    detailRoot.toggleAttribute('inert', true);
+-    selected = identity; paint();
+-    if (!identity) {
+-      detailRoot.toggleAttribute('inert', false);
+-      detailRoot.replaceChildren(ui.h('h3', '', S.empty), ui.msgline(S.emptyHint), ui.button(S.create, { onClick: () => run(create) }));
+-      return;
+-    }
+-    try { await openDetail(identity, gen); } catch (error) {
+-      if (gen === renderId) { detailRoot.replaceChildren(); detailRoot.toggleAttribute('inert', false); }
+-      throw error;
+-    }
++
++  /** The new-source form, in place of the source panel. */
++  function openCreate() {
++    creating = true;
++    paintList();
++    const back = ui.button(S.back, { onClick: () => { creating = false; if (!selected) selected = state.sources[0]?.name ?? ''; paint(); } });
++    const body = ui.h('div');
++    detail.replaceChildren(back, body);
++    newSourceForm(body);
    }
 -  async function openDetail(identity: string, gen: number): Promise<void> {
 -    const saved = identity === NEW_DRAFT_ID ? null : await get<Detail>(connectionPath(identity), opts);
@@ -1341,35 +1521,7 @@ index 21daada..42f6d62 100644
 -        while (used.has(candidate.toLowerCase())) candidate = `${base}-${number++}`;
 -        editing.name = candidate; newDraft = editing; await select(NEW_DRAFT_ID, true);
 -      },
-+
-+  /** New models of the current type; a chat model starts from the module's generation defaults and what the list states. */
-+  async function addModel(item: Source, module: Module | undefined, model: { id: string; contextWindow?: number; inputImages?: boolean }) {
-+    const fields = type === 'chat'
-+      ? { spec: { ...newModelSpec(module), model: model.id, ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}) }, ...(model.inputImages !== undefined ? { multimodal: model.inputImages } : {}) }
-+      : {};
-+    await post(sourcePath(item.name) + '/models', { expectedRevision: item.revision, models: [{ id: model.id, type, ...fields }] }, opts);
-+    await refresh();
-+  }
-+
-+  /** The new-source form (`''`) or one chat model's connection editor, in place of the source panel. */
-+  function openEditor(target: string) {
-+    editor?.dispose(); editor = null;
-+    editing = target;
-+    paintList();
-+    const back = ui.button(S.back, { onClick: () => { editor?.dispose(); editor = null; editing = null; if (!selected) selected = state.sources[0]?.name ?? ''; paint(); } });
-+    const body = ui.h('div');
-+    detail.replaceChildren(back, body);
-+    if (!target) { newSourceForm(body); return; }
-+    run(async () => {
-+      const saved = await get<Detail>(connectionPath(target), opts);
-+      if (editing !== target || ctx.signal.aborted) return;
-+      editor = await mountDetail({ ctx, root: body, modules, saved, draft: null, changed: () => {},
-+        onSaved: async () => { await refresh(); },
-+        cancelled: async () => { openEditor(target); },
-+        deleted: async () => { editor?.dispose(); editor = null; editing = null; await refresh(); },
-+      });
-+      if (editing !== target) { editor.dispose(); editor = null; }
-     });
+-    });
 -    if (gen !== renderId || ctx.signal.aborted) mounted.dispose();
 -    else {
 -      const scroll = detailRoot.closest<HTMLElement>('.featureslot, .scroll');
@@ -1378,13 +1530,38 @@ index 21daada..42f6d62 100644
 -      detailRoot.toggleAttribute('inert', false);
 -      if (scroll && scrollTop !== undefined) scroll.scrollTop = scrollTop;
 -      controller = mounted;
--    }
-   }
--  async function create() {
--    if (newDraft) return select(NEW_DRAFT_ID);
--    newDraft = { original: null, name: '', entry: { kind: '', baseUrl: '' }, secretValue: '', raw: {} };
--    drafts.set(newDraft);
--    await select(NEW_DRAFT_ID, true);
++
++  /** One chat model's settings in a dialog; the source page keeps the address, key and model list. */
++  function openModel(ref: string) {
++    dialog?.close();
++    const body = ui.h('div', 'model-hub-dialog');
++    const line = ui.msgline();
++    body.append(line);
++    const layer = ui.drawer(ref, body);
++    body.closest('.modalcard')?.classList.add('model-hub-dialog-card');
++    let controller: DetailController | null = null;
++    // Esc and the backdrop close the layer without telling us; watching it leave the page catches every way out.
++    const watch = new MutationObserver(() => { if (!body.isConnected) close(); });
++    const modal = body.closest('.modal');
++    if (modal?.parentNode) watch.observe(modal.parentNode, { childList: true });
++    const self = { close };
++    function close() {
++      watch.disconnect(); controller?.dispose(); controller = null;
++      if (dialog === self) dialog = null;
++      layer.dispose();
+     }
++    dialog = self;
++    run(async () => {
++      const saved = await get<Detail>(connectionPath(ref), opts);
++      if (!body.isConnected) return;
++      controller = await mountDetail({ ctx, root: body, modules, saved, draft: null, modelOnly: true, changed: () => {},
++        onSaved: async () => { close(); await refresh(); },
++        cancelled: async () => { close(); },
++        deleted: async () => { close(); await refresh(); },
++      });
++      if (!body.isConnected) { controller.dispose(); controller = null; }
++    }, line);
++  }
 +
 +  function newSourceForm(body: HTMLElement) {
 +    const card = ui.sheet({ title: S.newSource, desc: S.createHint });
@@ -1392,20 +1569,34 @@ index 21daada..42f6d62 100644
 +    const nameNote = ui.h('div', 'field-error');
 +    name.addEventListener('input', () => { nameNote.textContent = name.value && validateProviderName(name.value) ? S.nameHint : ''; }, opts);
 +    const url = ui.input(); url.setAttribute('aria-label', S.url);
-+    const select = ui.select({ value: '', options: [{ value: '', label: '—' }, ...modules.map(module => ({ value: module.id, label: module.title }))],
-+      onChange: kind => { url.value = moduleOf(kind)?.defaultBaseUrl ?? ''; } });
-+    select.setAttribute('aria-label', S.module);
 +    const key = ui.input({ type: 'password', placeholder: S.keyEmpty }); key.setAttribute('aria-label', S.key);
++    const urlField = ui.field(S.url + ' *', url);
++    const keyField = ui.field(S.key, key);
++    const signInNote = ui.msgline(S.signInAfterSave); signInNote.hidden = true;
++    const select = ui.select({ value: '', options: [{ value: '', label: '—' }, ...modules.map(module => ({ value: module.id, label: module.title }))],
++      onChange: kind => {
++        url.value = moduleOf(kind)?.defaultBaseUrl ?? '';
++        // A sign-in module fixes its address and has no key: the form sends the default address unseen.
++        const account = signsIn(moduleOf(kind));
++        urlField.hidden = keyField.hidden = account; signInNote.hidden = !account;
++        if (account) key.value = '';
++      } });
++    select.setAttribute('aria-label', S.module);
 +    const line = ui.msgline();
 +    const create = ui.button(S.save, { variant: 'primary', onClick: () => run(async () => {
 +      if (!select.value) throw new Error(S.chooseModule);
 +      await post('/api/provider-sources', { name: name.value, kind: select.value, baseUrl: url.value, ...(key.value ? { secretValue: key.value } : {}) }, opts);
-+      selected = name.value; editing = null; await refresh();
++      selected = name.value; creating = false; await refresh();
 +    }, line) });
 +    const actions = ui.rowbar(); actions.append(create, line);
-+    card.body.append(ui.field(S.name + ' *', name), nameNote, ui.msgline(S.nameHint), ui.field(S.module + ' *', select), ui.field(S.url + ' *', url), ui.field(S.key, key), actions);
++    card.body.append(ui.field(S.name + ' *', name), nameNote, ui.msgline(S.nameHint), ui.field(S.module + ' *', select), urlField, keyField, signInNote, actions);
 +    body.append(card.el);
-+  }
+   }
+-  async function create() {
+-    if (newDraft) return select(NEW_DRAFT_ID);
+-    newDraft = { original: null, name: '', entry: { kind: '', baseUrl: '' }, secretValue: '', raw: {} };
+-    drafts.set(newDraft);
+-    await select(NEW_DRAFT_ID, true);
 +
 +  /** Re-reads the sources and redraws; the periodic read redraws only when the answer changed, not under the pointer. */
 +  async function refresh(always = true) {
@@ -1426,12 +1617,12 @@ index 21daada..42f6d62 100644
 -    if (route.segments[0] === 'providers' && route.segments[1]) run(() => select(route.segments[1]));
 -  }));
 -  // Other deployments' selections and liveness change without this page; the detail form is left alone.
-+  ctx.lifecycle.own({ dispose: () => editor?.dispose() });
-+  // Other deployments' selections and liveness change without this page; an open editor is left alone.
++  ctx.lifecycle.own({ dispose: () => { dialog?.close(); for (const handle of panelHandles.splice(0)) handle.dispose(); panelHost?.unmount(); } });
++  // Other deployments' selections and liveness change without this page; an open form or dialog is left alone.
    let refreshing = false;
    ctx.lifecycle.interval(() => {
 -    if (refreshing) return;
-+    if (refreshing || editing !== null || doc.activeElement?.closest('.model-hub')) return;
++    if (refreshing || creating || dialog || doc.activeElement?.closest('.model-hub')) return;
      refreshing = true;
 -    run(async () => { try { await refresh(); } finally { refreshing = false; } });
 -  }, USAGE_REFRESH_MS);
@@ -1440,11 +1631,11 @@ index 21daada..42f6d62 100644
 -  await select(wanted && (wanted === NEW_DRAFT_ID || state.providers.some(item => item.name === wanted)) ? wanted : state.providers.find(item => item.name === state.active)?.name ?? state.providers[0]?.name ?? '', true);
 +    run(async () => { try { await refresh(false); } finally { refreshing = false; } });
 +  }, REFRESH_MS);
-+  if (editing === '') openEditor(''); else paint();
++  if (creating) openCreate(); else paint();
  }
  export const providersFeature: FrameworkFeature = { route: 'providers', label: S.navLabel, icon: 'cpu', navGroup: S.navGroup, mount: mountProviders };
 diff --git a/src/web/client/features/providers/strings.de.ts b/src/web/client/features/providers/strings.de.ts
-index 94b8296..fbf84a0 100644
+index 94b8296..cc712e6 100644
 --- a/src/web/client/features/providers/strings.de.ts
 +++ b/src/web/client/features/providers/strings.de.ts
 @@ -1,12 +1,13 @@
@@ -1475,7 +1666,7 @@ index 94b8296..fbf84a0 100644
    reasoning: 'Denkaufwand', thinking: 'Denkprozess aktivieren', temperature: 'Temperatur', maxTokens: 'Max. Ausgabe-Tokens', context: 'Kontextlimit', tier: 'Servicestufe', images: 'Bilder akzeptieren',
    catalogNoWindow: 'Die Modellliste nennt kein Kontextfenster für dieses Modell; trage es laut Dokumentation des Anbieters ein.',
    catalogMaxOutput: (tokens: number) => `Die Modellliste nennt eine maximale Ausgabe von ${tokens} Tokens.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'Zusätzliche Header (JSON-Objekt)', extraBody: 'Zusätzlicher Anfrage-Body (JSON-Objekt)', priceRules: 'Vollständige Preisregeln (JSON-Array)',
    shared: 'Geteilte Konfiguration: Mehrere Bots können diese Verbindung nutzen. Änderungen aktualisieren diese geteilte Konfiguration; lege eine weitere Verbindung an, wenn du andere Einstellungen brauchst.',
    remove: 'Verbindung löschen', duplicate: 'Verbindung duplizieren', cancel: 'Änderungen verwerfen', save: 'Speichern', saved: 'Gespeichert',
@@ -1491,10 +1682,11 @@ index 94b8296..fbf84a0 100644
 +  models: 'Modelle', configured: 'Eingerichtete Modelle', available: 'Verfügbare Modelle', noConfigured: 'Noch keine Modelle dieses Typs. Rufe die Modellliste ab und wähle Hinzufügen, oder gib eine Modell-ID ein.',
 +  customModelId: 'Eigene Modell-ID', addModel: 'Hinzufügen', enabled: 'Aktiv', modelSettings: 'Modelleinstellungen', removeModel: 'Modell löschen',
 +  typeUnsupported: (type: string) => `Das Protokoll dieses Anbieters unterstützt keine ${type}-Modelle.`,
++  signInAfterSave: 'Dieser Typ meldet sich mit einem Konto statt mit Adresse und Schlüssel an; melden Sie sich nach dem Speichern auf der Anbieterseite an.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} Dimensionen`, rerank: (n: number) => `${n} Ergebnisse`, stt: () => '', tts: (n: number) => `${n} Byte Audio` },
  };
 diff --git a/src/web/client/features/providers/strings.es-419.ts b/src/web/client/features/providers/strings.es-419.ts
-index 8d2351b..a4d50dc 100644
+index 8d2351b..b61cb72 100644
 --- a/src/web/client/features/providers/strings.es-419.ts
 +++ b/src/web/client/features/providers/strings.es-419.ts
 @@ -1,12 +1,13 @@
@@ -1525,7 +1717,7 @@ index 8d2351b..a4d50dc 100644
    reasoning: 'Esfuerzo de razonamiento', thinking: 'Activar razonamiento', temperature: 'Temperatura', maxTokens: 'Máximo de tokens de salida', context: 'Límite de contexto', tier: 'Nivel de servicio', images: 'Aceptar imágenes',
    catalogNoWindow: 'La lista de modelos no indica la ventana de contexto de este modelo; complétala según la documentación del proveedor.',
    catalogMaxOutput: (tokens: number) => `La lista de modelos indica una salida máxima de ${tokens} tokens.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'Encabezados adicionales (objeto JSON)', extraBody: 'Cuerpo de solicitud adicional (objeto JSON)', priceRules: 'Reglas de precios completas (arreglo JSON)',
    shared: 'Configuración compartida: varios bots pueden usar esta conexión. Los cambios actualizan esta configuración compartida; crea otra conexión si necesitas ajustes diferentes.',
    remove: 'Eliminar conexión', duplicate: 'Duplicar conexión', cancel: 'Descartar cambios', save: 'Guardar', saved: 'Guardado',
@@ -1541,10 +1733,11 @@ index 8d2351b..a4d50dc 100644
 +  models: 'Modelos', configured: 'Modelos configurados', available: 'Modelos disponibles', noConfigured: 'Todavía no hay modelos de este tipo. Obtén la lista de modelos y elige Agregar, o escribe un id de modelo.',
 +  customModelId: 'Id de modelo personalizado', addModel: 'Agregar', enabled: 'Activado', modelSettings: 'Ajustes del modelo', removeModel: 'Eliminar modelo',
 +  typeUnsupported: (type: string) => `El protocolo de este proveedor no admite modelos ${type}.`,
++  signInAfterSave: 'Este tipo inicia sesión con una cuenta en lugar de una dirección y una clave; inicia sesión en la página del proveedor después de guardar.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensiones`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de audio` },
  };
 diff --git a/src/web/client/features/providers/strings.fr.ts b/src/web/client/features/providers/strings.fr.ts
-index 668d95a..5326795 100644
+index 668d95a..6e37444 100644
 --- a/src/web/client/features/providers/strings.fr.ts
 +++ b/src/web/client/features/providers/strings.fr.ts
 @@ -1,12 +1,13 @@
@@ -1575,7 +1768,7 @@ index 668d95a..5326795 100644
    reasoning: 'Effort de raisonnement', thinking: 'Activer le raisonnement', temperature: 'Température', maxTokens: 'Tokens de sortie max', context: 'Limite de contexte', tier: 'Niveau de service', images: 'Accepter les images',
    catalogNoWindow: "La liste des modèles n'indique pas de fenêtre de contexte pour ce modèle ; renseignez-la d'après la documentation du fournisseur.",
    catalogMaxOutput: (tokens: number) => `La liste des modèles indique une sortie maximale de ${tokens} tokens.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'En-têtes supplémentaires (objet JSON)', extraBody: 'Corps de requête supplémentaire (objet JSON)', priceRules: 'Règles de tarification complètes (tableau JSON)',
    shared: 'Configuration partagée : plusieurs bots peuvent utiliser cette connexion. Les modifications mettent à jour cette configuration partagée ; créez une autre connexion si vous avez besoin de réglages différents.',
    remove: 'Supprimer la connexion', duplicate: 'Dupliquer la connexion', cancel: 'Annuler les modifications', save: 'Enregistrer', saved: 'Enregistré',
@@ -1591,10 +1784,11 @@ index 668d95a..5326795 100644
 +  models: 'Modèles', configured: 'Modèles configurés', available: 'Modèles disponibles', noConfigured: "Aucun modèle de ce type pour l'instant. Récupérez la liste des modèles et choisissez Ajouter, ou saisissez un identifiant de modèle.",
 +  customModelId: 'Identifiant de modèle personnalisé', addModel: 'Ajouter', enabled: 'Activé', modelSettings: 'Réglages du modèle', removeModel: 'Supprimer le modèle',
 +  typeUnsupported: (type: string) => `Le protocole de ce fournisseur ne prend pas en charge les modèles ${type}.`,
++  signInAfterSave: 'Ce type se connecte avec un compte plutôt qu’une adresse et une clé ; connectez-vous sur la page du fournisseur après l’enregistrement.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} résultats`, stt: () => '', tts: (n: number) => `${n} octets audio` },
  };
 diff --git a/src/web/client/features/providers/strings.it.ts b/src/web/client/features/providers/strings.it.ts
-index 13d8b2e..764331d 100644
+index 13d8b2e..f0e9f46 100644
 --- a/src/web/client/features/providers/strings.it.ts
 +++ b/src/web/client/features/providers/strings.it.ts
 @@ -1,12 +1,13 @@
@@ -1625,7 +1819,7 @@ index 13d8b2e..764331d 100644
    reasoning: 'Sforzo di ragionamento', thinking: 'Abilita ragionamento', temperature: 'Temperatura', maxTokens: 'Token massimi in uscita', context: 'Limite di contesto', tier: 'Livello di servizio', images: 'Accetta immagini',
    catalogNoWindow: "L'elenco dei modelli non indica una finestra di contesto per questo modello; inseriscila dalla documentazione del provider.",
    catalogMaxOutput: (tokens: number) => `L'elenco dei modelli indica un output massimo di ${tokens} token.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'Header aggiuntivi (oggetto JSON)', extraBody: 'Corpo della richiesta aggiuntivo (oggetto JSON)', priceRules: 'Regole di prezzo complete (array JSON)',
    shared: "Configurazione condivisa: più bot possono usare questa connessione. Le modifiche aggiornano questa configurazione condivisa; crea un'altra connessione se ti servono impostazioni diverse.",
    remove: 'Elimina connessione', duplicate: 'Duplica connessione', cancel: 'Annulla modifiche', save: 'Salva', saved: 'Salvato',
@@ -1641,10 +1835,11 @@ index 13d8b2e..764331d 100644
 +  models: 'Modelli', configured: 'Modelli configurati', available: 'Modelli disponibili', noConfigured: "Nessun modello di questo tipo. Recupera l'elenco dei modelli e scegli Aggiungi, oppure inserisci un id di modello.",
 +  customModelId: 'Id modello personalizzato', addModel: 'Aggiungi', enabled: 'Attivo', modelSettings: 'Impostazioni del modello', removeModel: 'Elimina modello',
 +  typeUnsupported: (type: string) => `Il protocollo di questo fornitore non supporta i modelli ${type}.`,
++  signInAfterSave: 'Questo tipo accede con un account invece di indirizzo e chiave; accedi nella pagina del provider dopo il salvataggio.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensioni`, rerank: (n: number) => `${n} risultati`, stt: () => '', tts: (n: number) => `${n} byte di audio` },
  };
 diff --git a/src/web/client/features/providers/strings.ja.ts b/src/web/client/features/providers/strings.ja.ts
-index 0df36b3..32bab4a 100644
+index 0df36b3..40a9265 100644
 --- a/src/web/client/features/providers/strings.ja.ts
 +++ b/src/web/client/features/providers/strings.ja.ts
 @@ -1,12 +1,13 @@
@@ -1675,7 +1870,7 @@ index 0df36b3..32bab4a 100644
    reasoning: '推論の強さ', thinking: '推論を有効化', temperature: '温度', maxTokens: '最大出力 token 数', context: 'コンテキスト上限', tier: 'サービス階層', images: '画像を受け付ける',
    catalogNoWindow: 'モデル一覧にこのモデルのコンテキスト上限が記載されていません。プロバイダーのドキュメントを参照して入力してください。',
    catalogMaxOutput: (tokens: number) => `モデル一覧に記載された最大出力は ${tokens} token です。`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: '追加リクエストヘッダー（JSON オブジェクト）', extraBody: '追加リクエストボディ（JSON オブジェクト）', priceRules: '料金ルール全体（JSON 配列）',
    shared: '共有設定：この接続は複数のボットで使えます。変更するとこの共有設定が変わります。異なる設定が必要な場合は新しい接続を作成してください。',
    remove: '接続を削除', duplicate: '接続を複製', cancel: '変更を破棄', save: '保存', saved: '保存しました',
@@ -1691,10 +1886,11 @@ index 0df36b3..32bab4a 100644
 +  models: 'モデル', configured: '設定済みのモデル', available: '利用可能なモデル', noConfigured: 'この種類のモデルはまだありません。モデル一覧を取得して「追加」を選ぶか、モデル ID を入力してください。',
 +  customModelId: 'カスタムモデル ID', addModel: '追加', enabled: '有効', modelSettings: 'モデル設定', removeModel: 'モデルを削除',
 +  typeUnsupported: (type: string) => `このプロバイダーのプロトコルは${type}モデルに対応していません。`,
++  signInAfterSave: 'この種類はアドレスとキーではなくアカウントでサインインします。保存後にプロバイダーのページでサインインしてください。',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} 次元`, rerank: (n: number) => `${n} 件の結果`, stt: () => '', tts: (n: number) => `${n} バイトの音声` },
  };
 diff --git a/src/web/client/features/providers/strings.ko.ts b/src/web/client/features/providers/strings.ko.ts
-index 51c2934..37b321c 100644
+index 51c2934..4b5d53a 100644
 --- a/src/web/client/features/providers/strings.ko.ts
 +++ b/src/web/client/features/providers/strings.ko.ts
 @@ -1,12 +1,13 @@
@@ -1725,7 +1921,7 @@ index 51c2934..37b321c 100644
    reasoning: '추론 강도', thinking: '추론 사용', temperature: '온도', maxTokens: '최대 출력 token', context: '컨텍스트 한도', tier: '서비스 등급', images: '이미지 허용',
    catalogNoWindow: '모델 목록에 이 모델의 컨텍스트 한도가 없습니다. 공급자 문서를 보고 직접 입력하세요.',
    catalogMaxOutput: (tokens: number) => `모델 목록에 나온 최대 출력은 ${tokens} token입니다.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: '추가 요청 헤더(JSON 객체)', extraBody: '추가 요청 본문(JSON 객체)', priceRules: '전체 가격 규칙(JSON 배열)',
    shared: '공유 설정: 여러 봇이 이 연결을 사용할 수 있습니다. 변경하면 이 공유 설정이 바뀝니다. 다른 설정이 필요하면 새 연결을 만드세요.',
    remove: '연결 삭제', duplicate: '연결 복제', cancel: '변경 취소', save: '저장', saved: '저장했습니다',
@@ -1741,10 +1937,11 @@ index 51c2934..37b321c 100644
 +  models: '모델', configured: '설정된 모델', available: '사용 가능한 모델', noConfigured: '이 종류의 모델이 아직 없습니다. 모델 목록을 가져와 "추가"를 누르거나 모델 ID를 입력하세요.',
 +  customModelId: '사용자 지정 모델 ID', addModel: '추가', enabled: '사용', modelSettings: '모델 설정', removeModel: '모델 삭제',
 +  typeUnsupported: (type: string) => `이 공급자의 프로토콜은 ${type} 모델을 지원하지 않습니다.`,
++  signInAfterSave: '이 유형은 주소와 키 대신 계정으로 로그인합니다. 저장한 뒤 공급자 페이지에서 로그인하세요.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n}차원`, rerank: (n: number) => `결과 ${n}개`, stt: () => '', tts: (n: number) => `오디오 ${n}바이트` },
  };
 diff --git a/src/web/client/features/providers/strings.pt-BR.ts b/src/web/client/features/providers/strings.pt-BR.ts
-index 39c77d5..078c890 100644
+index 39c77d5..008632c 100644
 --- a/src/web/client/features/providers/strings.pt-BR.ts
 +++ b/src/web/client/features/providers/strings.pt-BR.ts
 @@ -1,12 +1,13 @@
@@ -1775,7 +1972,7 @@ index 39c77d5..078c890 100644
    reasoning: 'Esforço de raciocínio', thinking: 'Ativar raciocínio', temperature: 'Temperatura', maxTokens: 'Máximo de tokens de saída', context: 'Limite de contexto', tier: 'Nível de serviço', images: 'Aceitar imagens',
    catalogNoWindow: 'A lista de modelos não informa a janela de contexto deste modelo; preencha com base na documentação do provedor.',
    catalogMaxOutput: (tokens: number) => `A lista de modelos informa uma saída máxima de ${tokens} tokens.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'Cabeçalhos extras (objeto JSON)', extraBody: 'Corpo de requisição extra (objeto JSON)', priceRules: 'Regras de preço completas (array JSON)',
    shared: 'Configuração compartilhada: vários bots podem usar esta conexão. As alterações atualizam esta configuração compartilhada; crie outra conexão se precisar de configurações diferentes.',
    remove: 'Excluir conexão', duplicate: 'Duplicar conexão', cancel: 'Descartar alterações', save: 'Salvar', saved: 'Salvo',
@@ -1791,10 +1988,11 @@ index 39c77d5..078c890 100644
 +  models: 'Modelos', configured: 'Modelos configurados', available: 'Modelos disponíveis', noConfigured: 'Ainda não há modelos deste tipo. Busque a lista de modelos e escolha Adicionar, ou digite um id de modelo.',
 +  customModelId: 'Id de modelo personalizado', addModel: 'Adicionar', enabled: 'Ativado', modelSettings: 'Configurações do modelo', removeModel: 'Excluir modelo',
 +  typeUnsupported: (type: string) => `O protocolo deste provedor não oferece suporte a modelos ${type}.`,
++  signInAfterSave: 'Este tipo entra com uma conta em vez de endereço e chave; entre na página do provedor depois de salvar.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensões`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de áudio` },
  };
 diff --git a/src/web/client/features/providers/strings.ru.ts b/src/web/client/features/providers/strings.ru.ts
-index aa625b5..9d4a06e 100644
+index aa625b5..b5bd958 100644
 --- a/src/web/client/features/providers/strings.ru.ts
 +++ b/src/web/client/features/providers/strings.ru.ts
 @@ -1,12 +1,13 @@
@@ -1825,7 +2023,7 @@ index aa625b5..9d4a06e 100644
    reasoning: 'Глубина рассуждения', thinking: 'Включить рассуждение', temperature: 'Температура', maxTokens: 'Максимум token на выходе', context: 'Предел контекста', tier: 'Уровень обслуживания', images: 'Принимать изображения',
    catalogNoWindow: 'В списке моделей не указано окно контекста этой модели; заполните его по документации провайдера.',
    catalogMaxOutput: (tokens: number) => `В списке моделей указан максимальный вывод: ${tokens} token.`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: 'Дополнительные заголовки (объект JSON)', extraBody: 'Дополнительное тело запроса (объект JSON)', priceRules: 'Полные правила тарификации (массив JSON)',
    shared: 'Общая конфигурация: это подключение могут использовать несколько ботов. Изменения меняют эту общую конфигурацию; если нужны другие параметры, создайте ещё одно подключение.',
    remove: 'Удалить подключение', duplicate: 'Дублировать подключение', cancel: 'Отменить изменения', save: 'Сохранить', saved: 'Сохранено',
@@ -1841,10 +2039,11 @@ index aa625b5..9d4a06e 100644
 +  models: 'Модели', configured: 'Настроенные модели', available: 'Доступные модели', noConfigured: 'Моделей этого типа пока нет. Получите список моделей и нажмите «Добавить» или введите id модели.',
 +  customModelId: 'Свой id модели', addModel: 'Добавить', enabled: 'Включена', modelSettings: 'Настройки модели', removeModel: 'Удалить модель',
 +  typeUnsupported: (type: string) => `Протокол этого поставщика не поддерживает модели «${type}».`,
++  signInAfterSave: 'Этот тип входит через аккаунт, а не по адресу и ключу; войдите на странице провайдера после сохранения.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} измерений`, rerank: (n: number) => `${n} результатов`, stt: () => '', tts: (n: number) => `${n} байт аудио` },
  };
 diff --git a/src/web/client/features/providers/strings.ts b/src/web/client/features/providers/strings.ts
-index 7495371..3e65e0a 100644
+index 7495371..fbd52b8 100644
 --- a/src/web/client/features/providers/strings.ts
 +++ b/src/web/client/features/providers/strings.ts
 @@ -9,12 +9,13 @@ import { S as ptBR } from './strings.pt-BR.ts';
@@ -1875,7 +2074,7 @@ index 7495371..3e65e0a 100644
    reasoning: '推理强度', thinking: '开启推理', temperature: '温度', maxTokens: '最大输出 token', context: '上下文上限', tier: '服务档位', images: '接受图片',
    catalogNoWindow: '目录没有给出这个模型的上下文上限；请按服务商文档手填。',
    catalogMaxOutput: (tokens: number) => `目录给出的最大输出为 ${tokens} token。`,
-@@ -30,20 +33,27 @@ const zh = {
+@@ -30,20 +33,28 @@ const zh = {
    extraHeaders: '附加请求头（JSON object）', extraBody: '附加请求体（JSON object）', priceRules: '完整计价规则（JSON array）',
    shared: '共享配置：此供应商可被多个 Bot 使用。修改会改变这份共享配置；若需要不同参数，建议新建一个供应商。',
    remove: '删除供应商', duplicate: '复制供应商', cancel: '放弃更改', save: '保存', saved: '已保存',
@@ -1891,6 +2090,7 @@ index 7495371..3e65e0a 100644
 +  models: '模型', configured: '已配置的模型', available: '可用模型', noConfigured: '这一类还没有模型。获取模型列表后点「添加」，或填写模型 id。',
 +  customModelId: '自定义模型 id', addModel: '添加', enabled: '启用', modelSettings: '模型设置', removeModel: '删除模型',
 +  typeUnsupported: (type: string) => `这个供应商的协议不支持${type}模型。`,
++  signInAfterSave: '这类供应商用账号登录，不填地址和 Key；保存后在供应商页登录。',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} 维`, rerank: (n: number) => `${n} 条结果`, stt: () => '', tts: (n: number) => `${n} 字节音频` } as Record<string, (n: number) => string>,
  };
  export const en: typeof zh = {
@@ -1909,7 +2109,7 @@ index 7495371..3e65e0a 100644
    names: (list: string[]) => list.join(', '),
    readiness: { ready: 'Ready to connect', 'needs-setup': 'Needs setup', 'runtime-unavailable': 'Runtime unavailable', invalid: 'Invalid configuration', 'module-missing': 'Module unavailable', draft: 'Draft' },
    basic: 'Basic information', connection: 'Connection', modelSection: 'Model and generation', moduleSection: 'Module settings', pricing: 'Pricing', advanced: 'Advanced protocol',
-@@ -52,6 +62,8 @@ export const en: typeof zh = {
+@@ -52,6 +63,8 @@ export const en: typeof zh = {
    fixedModule: 'The connection type cannot change after saving. Create a connection to use another type.',
    test: 'Test connection', testOk: 'Test successful', testFailed: 'Test failed',
    keyEmpty: 'Enter API Key', fetchModels: 'Fetch model list', modelList: 'Model list', modelsFetched: (count: number) => `Fetched ${count} models.`,
@@ -1918,7 +2118,7 @@ index 7495371..3e65e0a 100644
    reasoning: 'Reasoning effort', thinking: 'Enable reasoning', temperature: 'Temperature', maxTokens: 'Max output tokens', context: 'Context limit', tier: 'Service tier', images: 'Accept images',
    catalogNoWindow: 'The model list states no context window for this model; fill it in from the provider\'s documentation.',
    catalogMaxOutput: (tokens: number) => `The model list states a max output of ${tokens} tokens.`,
-@@ -59,12 +71,18 @@ export const en: typeof zh = {
+@@ -59,12 +72,19 @@ export const en: typeof zh = {
    extraHeaders: 'Extra headers (JSON object)', extraBody: 'Extra request body (JSON object)', priceRules: 'Full pricing rules (JSON array)',
    shared: 'Shared configuration: multiple bots can use this connection. Changes update this shared configuration; create another connection if you need different settings.',
    remove: 'Delete connection', duplicate: 'Duplicate connection', cancel: 'Discard changes', save: 'Save', saved: 'Saved',
@@ -1934,12 +2134,13 @@ index 7495371..3e65e0a 100644
 +  models: 'Models', configured: 'Configured models', available: 'Available models', noConfigured: 'No models of this type yet. Fetch the model list and choose Add, or enter a model id.',
 +  customModelId: 'Custom model id', addModel: 'Add', enabled: 'Enabled', modelSettings: 'Model settings', removeModel: 'Delete model',
 +  typeUnsupported: (type: string) => `This provider's protocol does not support ${type} models.`,
++  signInAfterSave: 'This type signs in with an account instead of an address and key; sign in on the provider page after saving.',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} results`, stt: () => '', tts: (n: number) => `${n} bytes of audio` },
  };
  export const S = pick({
    zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
 diff --git a/src/web/client/features/providers/strings.zh-Hant.ts b/src/web/client/features/providers/strings.zh-Hant.ts
-index 300ae53..6b258ba 100644
+index 300ae53..00e79db 100644
 --- a/src/web/client/features/providers/strings.zh-Hant.ts
 +++ b/src/web/client/features/providers/strings.zh-Hant.ts
 @@ -1,12 +1,13 @@
@@ -1970,7 +2171,7 @@ index 300ae53..6b258ba 100644
    reasoning: '推理強度', thinking: '開啟推理', temperature: '溫度', maxTokens: '最大輸出 token', context: '上下文上限', tier: '服務檔位', images: '接受圖片',
    catalogNoWindow: '目錄沒有給出這個模型的上下文上限；請依服務商文件手動填寫。',
    catalogMaxOutput: (tokens: number) => `目錄給出的最大輸出為 ${tokens} token。`,
-@@ -22,10 +25,16 @@ export const S: Partial<typeof en> = {
+@@ -22,10 +25,17 @@ export const S: Partial<typeof en> = {
    extraHeaders: '附加請求標頭（JSON object）', extraBody: '附加請求內容（JSON object）', priceRules: '完整計價規則（JSON array）',
    shared: '共享設定：此供應商可被多個 Bot 使用。修改會改變這份共享設定；若需要不同參數，建議新增一個供應商。',
    remove: '刪除供應商', duplicate: '複製供應商', cancel: '放棄變更', save: '儲存', saved: '已儲存',
@@ -1986,6 +2187,7 @@ index 300ae53..6b258ba 100644
 +  models: '模型', configured: '已設定的模型', available: '可用模型', noConfigured: '這一類還沒有模型。取得模型清單後點「加入」，或填寫模型 id。',
 +  customModelId: '自訂模型 id', addModel: '加入', enabled: '啟用', modelSettings: '模型設定', removeModel: '刪除模型',
 +  typeUnsupported: (type: string) => `這個供應商的協定不支援${type}模型。`,
++  signInAfterSave: '這類供應商以帳號登入，不填地址和 Key；儲存後在供應商頁面登入。',
 +  testDetail: { chat: () => '', embedding: (n: number) => `${n} 維`, rerank: (n: number) => `${n} 筆結果`, stt: () => '', tts: (n: number) => `${n} 位元組音訊` },
  };
 diff --git a/src/web/client/features/providers/types.ts b/src/web/client/features/providers/types.ts
@@ -2010,7 +2212,7 @@ index 4fd43cd..3551880 100644
 +export const sourcePath = (name: string) => `/api/provider-sources/${encodeURIComponent(name)}`;
 +export const sourceModelPath = (name: string, id: string) => `${sourcePath(name)}/models/${encodeURIComponent(id)}`;
 diff --git a/src/web/public/styles.css b/src/web/public/styles.css
-index 2ee070b..2cb9782 100644
+index 2ee070b..98d6830 100644
 --- a/src/web/public/styles.css
 +++ b/src/web/public/styles.css
 @@ -1061,7 +1061,7 @@
@@ -2111,7 +2313,7 @@ index 2ee070b..2cb9782 100644
  /* Extension categories own their scrolling, pagination and action feedback. */
  .brand .wordmark { height: 36px; }
  .featureslot-extensions { scroll-padding-top: 76px; }
-@@ -2348,3 +2329,43 @@ button.extension-stat:hover { background: color-mix(in srgb, var(--accent) 12%,
+@@ -2348,3 +2329,45 @@ button.extension-stat:hover { background: color-mix(in srgb, var(--accent) 12%,
    .ukpis > .stat:nth-child(n) { padding-left: 16px; border-left: 1px solid var(--line); }
    .ukpis > .stat:nth-child(2n + 1) { padding-left: 0; border-left: 0; }
  }
@@ -2154,6 +2356,8 @@ index 2ee070b..2cb9782 100644
 +.model-hub-icon:disabled{opacity:.5;cursor:default}
 +.model-hub-upstream[hidden]{display:none}
 +.model-hub-upstream .connection-model-row .grow{flex:1}
++.modalcard.model-hub-dialog-card{width:min(720px,92vw)}
++.model-hub-dialog>.msgline:empty{display:none}
 +@media(max-width:760px){.model-hub-model{grid-template-columns:1fr}}
 diff --git a/src/web/server.ts b/src/web/server.ts
 index 411b2c8..a5af1c9 100644
@@ -2185,10 +2389,19 @@ index 411b2c8..a5af1c9 100644
      app.get('/api/status', wrap((_req, res) => {
        res.json({ ...this.safeStatus(), uptimeSec: Math.round(process.uptime()) });
 diff --git a/tests/providers/hub.test.ts b/tests/providers/hub.test.ts
-index fae87a7..c5c6dab 100644
+index fae87a7..8f27f03 100644
 --- a/tests/providers/hub.test.ts
 +++ b/tests/providers/hub.test.ts
-@@ -154,6 +154,18 @@ it('probes and lists models on a browser draft with its typed key, writing nothi
+@@ -8,6 +8,8 @@ import { ProviderSettings } from '../../src/providers/webui/settings.ts';
+ import { ProviderHub } from '../../src/providers/webui/hub.ts';
+ import { acquireInstanceLock } from '../../src/core/instance-lock.ts';
+ import { validateProviderName } from '../../src/providers/name.ts';
++import { providerModules } from '../../src/providers/registry.ts';
++import type { ProviderModule } from '../../src/providers/base.ts';
+ 
+ const cleanups: Array<() => void> = [];
+ afterEach(() => cleanups.splice(0).forEach(fn => fn()));
+@@ -154,6 +156,18 @@ it('probes and lists models on a browser draft with its typed key, writing nothi
    } finally { vi.unstubAllGlobals(); }
  });
  
@@ -2207,7 +2420,7 @@ index fae87a7..c5c6dab 100644
  it('module list carries the editor sections of each module in its declared order', () => {
    const { hub, settings } = fixture();
    const sections = Object.fromEntries(hub.moduleList('en').map(module => [module.id, module.sections.map(section => section.id)]));
-@@ -215,3 +227,75 @@ it('writes a key typed for a source model into the source .env', () => {
+@@ -215,3 +229,99 @@ it('writes a key typed for a source model into the source .env', () => {
    expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('CORTICO_KEY_DEEPSEEK=rotated');
    expect(settings.secretStatus('deepseek/flash', hub.detail('deepseek/flash', 'en').entry)).toBe('file');
  });
@@ -2283,12 +2496,36 @@ index fae87a7..c5c6dab 100644
 +  expect(await hub.testModel('deepseek', 'whisper', 'en')).toEqual({ ok: false, error: expect.stringContaining('needs audio') });
 +  await expect(hub.testModel('deepseek', 'absent', 'en')).rejects.toThrow('no such model');
 +});
++
++it('a source without models previews its module panel as saved, sharing one sign-in object across calls', async () => {
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const root = join(temp.dir, 'providers'); mkdirSync(root);
++  const file = join(temp.dir, 'config.json'); writeFileSync(file, '{}');
++  let sessions = 0;
++  // A sign-in module keeps its pending login in a `host.resource` object, as the ChatGPT module does.
++  const account: ProviderModule = { id: 'account', title: 'Account', defaultBaseUrl: 'https://account.test/v1', reasoningTiers: [], serviceTiers: [],
++    create: (_name, _entry, host) => ({ client: {} as never, control: host.resource!('session', () => ({ id: ++sessions, stateDir: host.stateDir })) }),
++    webUi: host => ({ invoke: async () => ({ editing: !!host.editing, session: host.instance(host.entries()[0].name).control }) }) };
++  const modules = [...providerModules, account];
++  const cfg = makeCfg({ providers: {}, activeProvider: '' });
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() }, modules);
++  const hub = new ProviderHub(cfg, registry, new ProviderSettings(cfg, registry, file, root), file, root, modules);
++  hub.createSource({ name: 'plan', kind: 'account', baseUrl: 'https://account.test/v1' }, 'en');
++  const connection = hub.sources('en').sources[0].connection;
++  const first = await hub.preview('plan', connection, 'login', 'state', [], 'en');
++  const second = await hub.preview('plan', connection, 'login', 'state', [], 'en');
++  expect(first.result).toEqual({ editing: false, session: { id: 1, stateDir: join(root, 'plan') } });
++  expect(second.result).toEqual(first.result);
++  // A changed draft is still a draft, with a session of its own.
++  const draft = await hub.preview('plan', { ...connection, baseUrl: 'https://other.test/v1' }, 'login', 'state', [], 'en');
++  expect(draft.result).toEqual({ editing: true, session: { id: 2, stateDir: join(root, 'plan') } });
++});
 diff --git a/tests/web/feature-providers-detail.test.ts b/tests/web/feature-providers-detail.test.ts
 new file mode 100644
-index 0000000..c45b117
+index 0000000..26752cd
 --- /dev/null
 +++ b/tests/web/feature-providers-detail.test.ts
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,161 @@
 +/** @vitest-environment jsdom */
 +/** The connection editor a chat model's settings open: probe, model list, discard and key handling. */
 +import { afterEach, expect, it, vi } from 'vitest';
@@ -2438,20 +2675,23 @@ index 0000000..c45b117
 +  expect(calls.find(call => call.path.endsWith('/save'))?.body).not.toHaveProperty('secretValue');
 +});
 +
-+it('a model under a provider keeps its name and model id and offers neither a model list nor a copy', async () => {
++it('a model under a provider shows only its own settings: no name, address, key, model list, copy or delete', async () => {
 +  const { root, calls } = await editor({ name: 'deepseek/flash', secretConfigured: 'file' });
-+  expect((root.querySelector('[aria-label="供应商名称"]') as HTMLInputElement).readOnly).toBe(true);
-+  expect((root.querySelector('[aria-label="模型"]') as HTMLInputElement).readOnly).toBe(true);
++  for (const label of ['供应商名称', '供应商类型', 'API 地址', 'API Key', '密钥环境变量名']) expect(root.querySelector(`[aria-label="${label}"]`)).toBeNull();
++  const model = root.querySelector('[aria-label="模型"]') as HTMLInputElement;
++  expect([model.readOnly, (model.closest('.connection-field') as HTMLElement).hidden]).toEqual([true, true]);
 +  expect(root.querySelector('.connection-model-picker')).toBeNull();
-+  expect(button(root, '获取模型列表')).toBeUndefined();
-+  expect(button(root, '复制供应商')).toBeUndefined();
++  for (const text of ['获取模型列表', '测试连接', '复制供应商', '删除供应商']) expect(button(root, text)).toBeUndefined();
++  expect(root.querySelector('[aria-label="温度"]')).not.toBeNull();
 +  expect(calls.some(call => call.path.endsWith('/models'))).toBe(false);
++  button(root, '保存').click(); await flush();
++  expect(calls.find(call => call.path.endsWith('/save'))!.body).toMatchObject({ name: 'deepseek/flash', entry: { baseUrl: 'https://model.test', spec: { model: 'test-model' } } });
 +});
 diff --git a/tests/web/feature-providers.test.ts b/tests/web/feature-providers.test.ts
-index f1fdbc5..d6b2a0b 100644
+index f1fdbc5..a573b12 100644
 --- a/tests/web/feature-providers.test.ts
 +++ b/tests/web/feature-providers.test.ts
-@@ -7,273 +7,161 @@ const { createWebUi } = await import(UI);
+@@ -7,273 +7,202 @@ const { createWebUi } = await import(UI);
  const { Lifecycle } = await import(LIFE);
  const { mountProviders, providersFeature } = await import(FEATURE);
  const lifecycles: any[] = [];
@@ -2464,6 +2704,8 @@ index f1fdbc5..d6b2a0b 100644
 +const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
 +const BLOCKS = [{ id: 'endpoint', title: '连接', builtin: 'connection-endpoint', defaultOpen: true }, { id: 'model', title: '模型与生成', builtin: 'connection-model', defaultOpen: true }];
 +const MODULE = { id: 'sample', title: 'Sample driver', description: '', defaultBaseUrl: 'https://model.test/v1', reasoningTiers: [], serviceTiers: [], effortSuggestions: [], effortPresets: [], sections: BLOCKS };
++/** A module that signs in with its own panel and places no address block. */
++const ACCOUNT = { ...MODULE, id: 'account', title: 'Account driver', defaultBaseUrl: 'https://account.test/v1', sections: [{ id: 'login', title: '账号登录' }, { id: 'pricing', title: '成本与计价', builtin: 'connection-pricing' }] };
 +const model = (id: string, patch: Record<string, unknown> = {}) => ({ id, ref: `deepseek/${id}`, type: 'chat', enabled: true, model: id, multimodal: false, contextWindow: null, active: false, readiness: { state: 'ready' }, usage: [], ...patch });
 +function sources() {
 +  return [
@@ -2474,8 +2716,8 @@ index f1fdbc5..d6b2a0b 100644
 +      connection: { kind: 'sample', baseUrl: 'https://chat.test' }, modelTypes: ['chat'], models: [{ ...model('gpt'), ref: 'chatgpt' }] },
 +  ];
 +}
-+interface Options { listed?: unknown[]; state?: ReturnType<typeof sources> }
-+async function fixture({ listed = [], state = sources() }: Options = {}) {
++interface Options { listed?: unknown[]; state?: ReturnType<typeof sources>; pageHost?: unknown }
++async function fixture({ listed = [], state = sources(), pageHost }: Options = {}) {
    const calls: Array<{ path: string; body: any }> = [];
 -  const detail = (name: string) => ({ name, entry: structuredClone(entry), revision: 'r1', secretConfigured, readiness: { state: 'ready' }, config: [], references: [] });
 +  let active = 'deepseek/flash';
@@ -2487,7 +2729,8 @@ index f1fdbc5..d6b2a0b 100644
 -    if (path === '/api/providers') result = { active, providers: names.map(name => ({ id: name, name, module: 'sample', moduleTitle: 'Sample driver', model: 'test-model', baseUrl: entry.baseUrl, active: name === active, usage, readiness: { state: readiness }, revision: 'r1' })) };
 -    else if (path === '/api/provider-modules') result = [{ id: 'sample', title: 'Sample driver', description: 'A sample connection', defaultBaseUrl: entry.baseUrl, reasoningTiers: [], serviceTiers: [], sections }];
 +    if (path === '/api/provider-sources' && !body) result = { scope: 's', active, sources: state.map(source => ({ ...source, models: source.models.map(m => ({ ...m, active: m.ref === active })) })) };
-+    else if (path === '/api/provider-modules') result = [MODULE];
++    else if (path === '/api/provider-modules') result = [MODULE, ACCOUNT];
++    else if (path === '/api/provider-modules/preview') result = { result: { signedIn: false }, entry: body.entry };
      else if (path === '/api/provider-modules/config') result = [];
      else if (/\/activate$/.test(path)) active = decodeURIComponent(path.split('/')[3]);
 -    else if (/\/delete$/.test(path)) names = names.filter(name => name !== decodeURIComponent(path.split('/')[3]));
@@ -2505,8 +2748,9 @@ index f1fdbc5..d6b2a0b 100644
    const root = document.createElement('div'); document.body.append(root);
    const lifecycle = new Lifecycle(() => {}); lifecycles.push(lifecycle);
    const ui = createWebUi({ memo: { get: (_: string, fallback: unknown) => fallback, set: () => {} }, overlayHost: document.body, signal: lifecycle.signal, doc: document });
-   const ctx = { root, ui, lifecycle, signal: lifecycle.signal, route: { segments: ['providers'] }, router: { addLeaveDecision: () => ({ dispose() {} }), onChange: () => ({ dispose() {} }) }, onError: (error: unknown) => { throw error; }, capabilities: {} };
+-  const ctx = { root, ui, lifecycle, signal: lifecycle.signal, route: { segments: ['providers'] }, router: { addLeaveDecision: () => ({ dispose() {} }), onChange: () => ({ dispose() {} }) }, onError: (error: unknown) => { throw error; }, capabilities: {} };
 -  await mountProviders(ctx); await flush(); return { root, calls, ctx };
++  const ctx = { root, ui, lifecycle, signal: lifecycle.signal, route: { segments: ['providers'] }, router: { addLeaveDecision: () => ({ dispose() {} }), onChange: () => ({ dispose() {} }) }, onError: (error: unknown) => { throw error; }, capabilities: {}, ...(pageHost ? { webUiPageHost: () => pageHost } : {}) };
 +  await mountProviders(ctx); await flush();
 +  return { root, calls, ctx };
  }
@@ -2576,7 +2820,9 @@ index f1fdbc5..d6b2a0b 100644
 -  expect((remounted.root.querySelector('[aria-label="API 地址"]') as HTMLInputElement).value).toBe('https://draft.test');
 -});
 -it('a form edited back to its saved state drops the draft', async () => {
--  const { root } = await fixture();
++it('keeps the providers route and opens on the source of the active model', async () => {
++  expect(providersFeature.route).toBe('providers');
+   const { root } = await fixture();
 -  const input = root.querySelector('[aria-label="API 地址"]') as HTMLInputElement;
 -  input.value = 'https://draft.test'; input.dispatchEvent(new Event('input')); await flush();
 -  input.value = entry.baseUrl; input.dispatchEvent(new Event('input')); await flush();
@@ -2584,9 +2830,7 @@ index f1fdbc5..d6b2a0b 100644
 -  expect(localStorage.length === 0 || !Object.values(localStorage).join('').includes('draft.test')).toBe(true);
 -});
 -it('switching away keeps the edits and shows them again on return', async () => {
-+it('keeps the providers route and opens on the source of the active model', async () => {
-+  expect(providersFeature.route).toBe('providers');
-   const { root } = await fixture();
+-  const { root } = await fixture();
 -  const input = root.querySelector('[aria-label="API 地址"]') as HTMLInputElement;
 -  input.value = 'https://draft.test'; input.dispatchEvent(new Event('input')); await flush();
 -  (root.querySelectorAll('.connection-card')[1] as HTMLElement).click(); await flush();
@@ -2631,8 +2875,15 @@ index f1fdbc5..d6b2a0b 100644
 -  const { root } = await fixture(['constructor']);
 -  expect(root.querySelector('.connection-secondary')?.textContent).toBe('');
 -  expect(root.querySelector('[aria-label="供应商名称"]')?.getAttribute('aria-invalid')).not.toBe('true');
--});
--
++it('switches the deployment chat model through the active selector', async () => {
++  const { root, calls } = await fixture();
++  const select = root.querySelector('select[aria-label="当前部署的对话模型"]') as HTMLSelectElement;
++  expect([...select.options].map(option => option.value)).toEqual(['deepseek/flash', 'deepseek/pro', 'chatgpt']);
++  select.value = 'deepseek/pro'; select.dispatchEvent(new Event('change')); await flush();
++  expect(calls.some(call => call.path === '/api/providers/deepseek%2Fpro/activate')).toBe(true);
++  expect((root.querySelector('select[aria-label="当前部署的对话模型"]') as HTMLSelectElement).value).toBe('deepseek/pro');
+ });
+ 
 -it('deleting from a card asks once on the button and carries the revision it listed', async () => {
 -  const { root, calls } = await fixture();
 -  const erase = root.querySelector('[data-provider="Beta"] .connection-erase') as HTMLButtonElement;
@@ -2646,36 +2897,6 @@ index f1fdbc5..d6b2a0b 100644
 -  expect(deletion.path).toBe('/api/providers/Beta/delete');
 -  expect(deletion.body).toEqual({ expectedRevision: 'r1' });
 -  expect(root.querySelector('[data-provider="Beta"]')).toBeNull();
--});
--
--it('cards carry no probe; the saved connection is tested from its detail form', async () => {
-+it('switches the deployment chat model through the active selector', async () => {
-   const { root, calls } = await fixture();
--  expect(root.querySelector('.connection-card button:not(.connection-erase):not(.connection-activate)')).toBeNull();
--  ([...root.querySelectorAll('button')].find(button => button.textContent === '测试连接') as HTMLButtonElement).click(); await flush();
--  expect(calls.some(call => call.path === '/api/providers/Alpha/test')).toBe(true);
--  expect(root.textContent).toContain('HTTP 200');
--  expect(root.textContent).toContain('probe-model');
--  expect(root.querySelector('.connection-test button + .msgline')?.textContent).toContain('HTTP 200');
-+  const select = root.querySelector('select[aria-label="当前部署的对话模型"]') as HTMLSelectElement;
-+  expect([...select.options].map(option => option.value)).toEqual(['deepseek/flash', 'deepseek/pro', 'chatgpt']);
-+  select.value = 'deepseek/pro'; select.dispatchEvent(new Event('change')); await flush();
-+  expect(calls.some(call => call.path === '/api/providers/deepseek%2Fpro/activate')).toBe(true);
-+  expect((root.querySelector('select[aria-label="当前部署的对话模型"]') as HTMLSelectElement).value).toBe('deepseek/pro');
- });
- 
--it('the editor probes and lists models on the unsaved form, key included, without saving', async () => {
--  const { root, calls } = await fixture();
--  const url = root.querySelector('[aria-label="API 地址"]') as HTMLInputElement;
--  url.value = 'https://edited.test'; url.dispatchEvent(new Event('input'));
--  const key = root.querySelector('[aria-label="API Key"]') as HTMLInputElement;
--  key.value = 'typed-key'; key.dispatchEvent(new Event('input'));
--  ([...root.querySelectorAll('button')].find(button => button.textContent === '测试连接') as HTMLButtonElement).click(); await flush();
--  const probe = calls.find(call => call.path === '/api/providers/Alpha/test')!;
--  expect(probe.body).toMatchObject({ entry: { baseUrl: 'https://edited.test' }, secretValue: 'typed-key' });
--  ([...root.querySelectorAll('button')].find(button => button.textContent === '获取模型列表') as HTMLButtonElement).click(); await flush();
--  expect(calls.find(call => call.path === '/api/providers/Alpha/models')!.body).toMatchObject({ entry: { baseUrl: 'https://edited.test' } });
--  expect(calls.some(call => call.path.endsWith('/save'))).toBe(false);
 +it('lists the upstream models of a source with a saved key once, without the configured ones, and searches both lists', async () => {
 +  const listed = [{ id: 'flash' }, { id: 'reasoner', displayName: 'Reasoner', contextWindow: 128000, inputImages: true }, { id: 'chat-lite' }];
 +  const { root, calls } = await fixture({ listed });
@@ -2691,6 +2912,41 @@ index f1fdbc5..d6b2a0b 100644
 +  expect([configured(root), upstream(root)]).toEqual([['flash'], []]);
 +  tab(root, '嵌入').click(); await flush(); tab(root, '对话').click(); await flush();
 +  expect(calls.filter(call => call.path === '/api/providers/deepseek/models')).toHaveLength(1);
+ });
+ 
+-it('cards carry no probe; the saved connection is tested from its detail form', async () => {
+-  const { root, calls } = await fixture();
+-  expect(root.querySelector('.connection-card button:not(.connection-erase):not(.connection-activate)')).toBeNull();
+-  ([...root.querySelectorAll('button')].find(button => button.textContent === '测试连接') as HTMLButtonElement).click(); await flush();
+-  expect(calls.some(call => call.path === '/api/providers/Alpha/test')).toBe(true);
+-  expect(root.textContent).toContain('HTTP 200');
+-  expect(root.textContent).toContain('probe-model');
+-  expect(root.querySelector('.connection-test button + .msgline')?.textContent).toContain('HTTP 200');
++it('adds a listed chat model with the generation defaults and what the list states', async () => {
++  const { root, calls } = await fixture({ listed: [{ id: 'reasoner', contextWindow: 128000, inputImages: true }] });
++  button(root.querySelector('[data-model="reasoner"]')!, '添加').click(); await flush();
++  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models')!.body).toEqual({ expectedRevision: 'r1', models: [{
++    id: 'reasoner', type: 'chat', spec: { model: 'reasoner', thinking: true, maxTokens: 8192, contextWindow: 128000 }, multimodal: true,
++  }] });
+ });
+ 
+-it('the editor probes and lists models on the unsaved form, key included, without saving', async () => {
++it('adds a custom model id under the current type, without generation fields outside chat', async () => {
+   const { root, calls } = await fixture();
+-  const url = root.querySelector('[aria-label="API 地址"]') as HTMLInputElement;
+-  url.value = 'https://edited.test'; url.dispatchEvent(new Event('input'));
+-  const key = root.querySelector('[aria-label="API Key"]') as HTMLInputElement;
+-  key.value = 'typed-key'; key.dispatchEvent(new Event('input'));
+-  ([...root.querySelectorAll('button')].find(button => button.textContent === '测试连接') as HTMLButtonElement).click(); await flush();
+-  const probe = calls.find(call => call.path === '/api/providers/Alpha/test')!;
+-  expect(probe.body).toMatchObject({ entry: { baseUrl: 'https://edited.test' }, secretValue: 'typed-key' });
+-  ([...root.querySelectorAll('button')].find(button => button.textContent === '获取模型列表') as HTMLButtonElement).click(); await flush();
+-  expect(calls.find(call => call.path === '/api/providers/Alpha/models')!.body).toMatchObject({ entry: { baseUrl: 'https://edited.test' } });
+-  expect(calls.some(call => call.path.endsWith('/save'))).toBe(false);
++  tab(root, '嵌入').click(); await flush();
++  const id = root.querySelector('[aria-label="自定义模型 id"]') as HTMLInputElement;
++  id.value = ' bge-large '; button(root.querySelector('.model-hub-toolbar')!, '添加').click(); await flush();
++  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models')!.body).toEqual({ expectedRevision: 'r1', models: [{ id: 'bge-large', type: 'embedding' }] });
  });
  
 -it('a fetched list shows its count; picking a model fills the model, context window and image switch, leaving max output to the operator', async () => {
@@ -2717,12 +2973,20 @@ index f1fdbc5..d6b2a0b 100644
 -  expect(root.textContent).not.toContain('8000');
 -  model.value = 'unlisted-model'; model.dispatchEvent(new Event('input')); model.dispatchEvent(new Event('change')); await flush();
 -  expect(picker.value).toBe('');
-+it('adds a listed chat model with the generation defaults and what the list states', async () => {
-+  const { root, calls } = await fixture({ listed: [{ id: 'reasoner', contextWindow: 128000, inputImages: true }] });
-+  button(root.querySelector('[data-model="reasoner"]')!, '添加').click(); await flush();
-+  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models')!.body).toEqual({ expectedRevision: 'r1', models: [{
-+    id: 'reasoner', type: 'chat', spec: { model: 'reasoner', thinking: true, maxTokens: 8192, contextWindow: 128000 }, multimodal: true,
-+  }] });
++it('a model row switches, tests and deletes that model by its source and id', async () => {
++  const { root, calls } = await fixture();
++  const row = root.querySelector('[data-model="pro"]')!;
++  const toggle = row.querySelector('[role="switch"]') as HTMLInputElement;
++  toggle.checked = false; toggle.dispatchEvent(new Event('change')); await flush();
++  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models/pro/update')!.body).toEqual({ expectedRevision: 'r1', enabled: false });
++  tab(root, '嵌入').click(); await flush();
++  (root.querySelector('[data-model="bge-m3"] [aria-label="测试连接"]') as HTMLButtonElement).click(); await flush();
++  expect(root.querySelector('[data-model="bge-m3"] .msgline')?.textContent).toBe('测试成功 · 0.3s · 1024 维');
++  expect(root.querySelector('[data-model="bge-m3"] [aria-label="模型设置"]')).toBeNull();
++  (root.querySelector('[data-model="bge-m3"] [aria-label="删除模型"]') as HTMLButtonElement).click(); await flush();
++  const dialog = document.querySelector('.modalcard')!;
++  [...dialog.querySelectorAll('button')].at(-1)!.click(); await flush();
++  expect(calls.some(call => call.path === '/api/provider-sources/deepseek/models/bge-m3/delete')).toBe(true);
  });
  
 -it('a saved connection offers discard only while the form differs from what is saved', async () => {
@@ -2735,12 +2999,26 @@ index f1fdbc5..d6b2a0b 100644
 -  cancel().click(); await flush();
 -  expect((root.querySelector('[aria-label="API 地址"]') as HTMLInputElement).value).toBe(entry.baseUrl);
 -  expect(cancel().hidden).toBe(true);
-+it('adds a custom model id under the current type, without generation fields outside chat', async () => {
++it('a chat model\'s settings open in a dialog without the source\'s name, address or key, and Esc closes it', async () => {
 +  const { root, calls } = await fixture();
-+  tab(root, '嵌入').click(); await flush();
-+  const id = root.querySelector('[aria-label="自定义模型 id"]') as HTMLInputElement;
-+  id.value = ' bge-large '; button(root.querySelector('.model-hub-toolbar')!, '添加').click(); await flush();
-+  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models')!.body).toEqual({ expectedRevision: 'r1', models: [{ id: 'bge-large', type: 'embedding' }] });
++  (root.querySelector('[data-model="pro"] [aria-label="模型设置"]') as HTMLButtonElement).click(); await flush();
++  expect(calls.some(call => call.path === '/api/providers/deepseek%2Fpro')).toBe(true);
++  const dialog = document.querySelector('.modalcard.model-hub-dialog-card') as HTMLElement;
++  expect(dialog.querySelector('.modaltitle')?.textContent).toBe('deepseek/pro');
++  for (const label of ['供应商名称', 'API 地址', 'API Key']) expect(dialog.querySelector(`[aria-label="${label}"]`)).toBeNull();
++  expect(button(dialog, '测试连接')).toBeUndefined();
++  expect(button(dialog, '删除供应商')).toBeUndefined();
++  expect(dialog.querySelector('[aria-label="温度"]')).not.toBeNull();
++  // The source page behind it stays as it was.
++  expect(configured(root)).toEqual(['flash', 'pro']);
++  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); await flush();
++  expect(document.querySelector('.modalcard')).toBeNull();
++  // A legacy endpoint shown as a source gets the same dialog.
++  tab(root, '对话').click();
++  (root.querySelector('[data-source="chatgpt"]') as HTMLButtonElement).click(); await flush();
++  (root.querySelector('[data-model="gpt"] [aria-label="模型设置"]') as HTMLButtonElement).click(); await flush();
++  expect(document.querySelector('.modalcard .modaltitle')?.textContent).toBe('chatgpt');
++  expect(document.querySelector('.modalcard [aria-label="API 地址"]')).toBeNull();
  });
  
 -it('keeps the editor in place and inert while discard reloads its saved data', async () => {
@@ -2763,21 +3041,22 @@ index f1fdbc5..d6b2a0b 100644
 -  expect(root.querySelector('.connection-detail')!.hasAttribute('inert')).toBe(false);
 -  expect(root.querySelector('[aria-label="API 地址"]')).not.toBe(input);
 -  expect((root.querySelector('[aria-label="API 地址"]') as HTMLInputElement).value).toBe(entry.baseUrl);
-+it('a model row switches, tests and deletes that model by its source and id', async () => {
-+  const { root, calls } = await fixture();
-+  const row = root.querySelector('[data-model="pro"]')!;
-+  const toggle = row.querySelector('[role="switch"]') as HTMLInputElement;
-+  toggle.checked = false; toggle.dispatchEvent(new Event('change')); await flush();
-+  expect(calls.find(call => call.path === '/api/provider-sources/deepseek/models/pro/update')!.body).toEqual({ expectedRevision: 'r1', enabled: false });
-+  tab(root, '嵌入').click(); await flush();
-+  (root.querySelector('[data-model="bge-m3"] [aria-label="测试连接"]') as HTMLButtonElement).click(); await flush();
-+  expect(root.querySelector('[data-model="bge-m3"] .msgline')?.textContent).toBe('测试成功 · 0.3s · 1024 维');
-+  expect(root.querySelector('[data-model="bge-m3"] [aria-label="模型设置"]')).toBeNull();
-+  (root.querySelector('[data-model="bge-m3"] [aria-label="删除模型"]') as HTMLButtonElement).click(); await flush();
-+  const dialog = document.querySelector('.modalcard')!;
-+  [...dialog.querySelectorAll('button')].at(-1)!.click(); await flush();
-+  expect(calls.some(call => call.path === '/api/provider-sources/deepseek/models/bge-m3/delete')).toBe(true);
- });
+-});
++it('a sign-in module hides the address and key when creating, and its source page mounts the module panel on the saved fields', async () => {
++  const mounted: Array<{ page: string; panel: string; scope: unknown; invoke: (method: string, args?: unknown[]) => Promise<unknown> }> = [];
++  const pageHost = { load: async () => {}, unmount: () => {}, mountConnection: async (page: string, panel: string, host: HTMLElement, scope: unknown, wrap: (context: any) => any) => {
++    const context = wrap({ panelId: panel }); mounted.push({ page, panel, scope, invoke: context.invoke });
++    host.append(Object.assign(document.createElement('p'), { textContent: 'login panel' }));
++    return { dispose() {} };
++  } };
++  const account = { name: 'plan', legacy: false, kind: 'account', moduleTitle: 'Account driver', baseUrl: 'https://account.test/v1', revision: 'r3', secretConfigured: 'none',
++    connection: { kind: 'account', baseUrl: 'https://account.test/v1' }, modelTypes: ['chat'], models: [] as ReturnType<typeof model>[] };
++  const { root, calls } = await fixture({ state: [account], pageHost });
++  expect(root.querySelector('.model-hub-connection')).toBeNull();
++  expect(root.querySelector('.model-hub-account')?.textContent).toContain('login panel');
++  expect(mounted.map(({ page, panel, scope }) => ({ page, panel, scope }))).toEqual([{ page: 'llm:account', panel: 'login', scope: { instance: 'plan' } }]);
++  await mounted[0].invoke('state', [{ name: 'plan' }]);
++  expect(calls.find(call => call.path === '/api/provider-modules/preview')!.body).toEqual({ name: 'plan', entry: account.connection, panel: 'login', method: 'state', args: [{ name: 'plan' }] });
  
 -it('a new connection uses the declared initial section states and marks required fields', async () => {
 -  const { root } = await fixture();
@@ -2792,16 +3071,16 @@ index f1fdbc5..d6b2a0b 100644
 -  expect(folds.map(section => section.open)).toEqual([true, true, false, false]);
 -  expect(root.querySelector('.fieldlabel .required-mark')?.textContent).toContain('*');
 -  expect(root.querySelector('[role="switch"][aria-label="接受图片"]')).not.toBeNull();
-+it('a chat model opens its connection editor with the name and model fixed, and back returns to the list', async () => {
-+  const { root, calls } = await fixture();
-+  (root.querySelector('[data-model="pro"] [aria-label="模型设置"]') as HTMLButtonElement).click(); await flush();
-+  expect(calls.some(call => call.path === '/api/providers/deepseek%2Fpro')).toBe(true);
-+  expect((root.querySelector('[aria-label="供应商名称"]') as HTMLInputElement).readOnly).toBe(true);
-+  expect((root.querySelector('[aria-label="模型"]') as HTMLInputElement).readOnly).toBe(true);
-+  expect(root.querySelector('.connection-model-picker')).toBeNull();
-+  expect(button(root, '复制供应商')).toBeUndefined();
-+  button(root, '← 返回').click(); await flush();
-+  expect(configured(root)).toEqual(['flash', 'pro']);
++  button(root, '+ 新增供应商').click(); await flush();
++  const name = root.querySelector('[aria-label="供应商名称"]') as HTMLInputElement;
++  name.value = 'plan2'; name.dispatchEvent(new Event('input'));
++  const kind = root.querySelector('select[aria-label="供应商类型"]') as HTMLSelectElement;
++  kind.value = 'account'; kind.dispatchEvent(new Event('change'));
++  const hidden = (label: string) => !!root.querySelector(`.connection-detail [aria-label="${label}"]`)!.closest('[hidden]');
++  expect([hidden('API 地址'), hidden('API Key')]).toEqual([true, true]);
++  expect(root.querySelector('.connection-detail')?.textContent).toContain('保存后在供应商页登录');
++  button(root.querySelector('.connection-detail')!, '保存').click(); await flush();
++  expect(calls.find(call => call.path === '/api/provider-sources' && call.body)!.body).toEqual({ name: 'plan2', kind: 'account', baseUrl: 'https://account.test/v1' });
  });
  
 -it('hides the connect control for endpoints that are not ready or are used by a running deployment', async () => {

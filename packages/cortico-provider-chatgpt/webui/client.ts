@@ -20,8 +20,14 @@ export default { panels: { account: { async mount(ctx: WebUiPanelContext) {
   usage.textContent = t('在 ChatGPT 中管理用量与授权', 'Manage usage and access in ChatGPT');
   const call = async (fn: () => Promise<void>) => { try { report.textContent = ''; await fn(); } catch (error) { report.textContent = String(error); } };
   let state = await invoke<State>('state');
+  /**
+   * `source`: a provider's page, which only signs in; its models are added from the account list there.
+   * `model`: one model under a provider, whose sign-in and model id live on the provider's page.
+   * `legacy`: a single endpoint holding both.
+   */
+  const mode = !state.spec ? 'source' : name.includes('/') ? 'model' : 'legacy';
   const write = async (path: string, value: string | number | boolean) => { await ctx.setConfig('chatgpt', { [`providers.${name}.${path}`]: value }); };
-  if (!state.spec?.model) await write('spec.model', '__login_required__');
+  if (mode === 'legacy' && !state.spec?.model) await write('spec.model', '__login_required__');
   const login = ui.button('Continue with ChatGPT', { onClick: () => call(async () => {
     const result = await invoke<{ url: string }>('login');
     loginLink.href = result.url; loginLink.hidden = false;
@@ -57,21 +63,24 @@ export default { panels: { account: { async mount(ctx: WebUiPanelContext) {
     const value = Number(context.value); if (!Number.isSafeInteger(value) || value < 1) throw new Error(t('上下文必须为正整数', 'Context must be a positive integer'));
     await write('spec.contextWindow', value);
   }), { signal });
-  root.append(note, account, actions, usage, ui.field(t('模型', 'Model'), model), loadModels,
-    ui.field(t('推理强度', 'Reasoning effort'), effort), ui.field(t('本地上下文上限', 'Local context limit'), context),
-    images.el,
-    ui.msgline(t('温度和服务端输出上限由模型决定，此接入不发送这两个参数。上下文仍受所选模型限制。', 'Temperature and the server output limit use model defaults. The selected model still limits context capacity.')), report);
+  const generation = [ui.field(t('推理强度', 'Reasoning effort'), effort), ui.field(t('本地上下文上限', 'Local context limit'), context), images.el,
+    ui.msgline(t('温度和服务端输出上限由模型决定，此接入不发送这两个参数。上下文仍受所选模型限制。', 'Temperature and the server output limit use model defaults. The selected model still limits context capacity.'))];
+  if (mode === 'source') root.append(note, account, actions, usage, report);
+  else if (mode === 'model') root.append(account, ...generation, report);
+  else root.append(note, account, actions, usage, ui.field(t('模型', 'Model'), model), loadModels, ...generation, report);
   let welcoming = false;
   async function refresh() {
     state = await invoke<State>('state');
     note.textContent = state.editing ? t('先保存配置，再完成登录。登录需在运行 myBot 的这台电脑上打开授权页。', 'Save the configuration first. Open the authorization page on the computer running myBot.') : '';
     account.textContent = state.signedIn ? t(`正在使用 ChatGPT 套餐 · ${state.email ?? ''}`, `Using ChatGPT plan · ${state.email ?? ''}`)
       : state.pending ? t('等待浏览器授权', 'Waiting for browser authorization') : t('尚未登录 ChatGPT', 'Not signed in to ChatGPT');
+    // A model's dialog says only what it cannot do: signing in is on the provider's page.
+    if (mode === 'model') account.textContent = state.signedIn ? '' : t('尚未登录 ChatGPT，请在供应商页登录。', 'Not signed in to ChatGPT; sign in on the provider page.');
     login.disabled = state.editing || state.pending; cancel.hidden = !state.pending;
     logout.disabled = state.editing || !state.signedIn; loadModels.disabled = state.editing || !state.signedIn;
     if (!state.pending) loginLink.hidden = true;
     if (state.error) report.textContent = state.error;
-    if (state.signedIn && state.needsWelcome && !state.editing && !welcoming) {
+    if (mode !== 'model' && state.signedIn && state.needsWelcome && !state.editing && !welcoming) {
       welcoming = true;
       try {
         await ui.confirm({ title: t('正在使用你的 ChatGPT 套餐', 'You’re using your ChatGPT plan'),
