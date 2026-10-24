@@ -1,5 +1,11 @@
 # `definition.ts` / `QqextrasWorld`
 
+## 0.3.1
+
+- Separate embedded panel styles from the upstream full-page layout.
+- Group images by category in responsive square thumbnail grids, with overlay selection, category badges and upload tiles.
+- Keep action rows horizontal and adapt to panel width, including narrow side panels.
+
 ## 0.3.0
 
 - Add management, semantic processing and mode settings tabs, with upload, category editing, batch moves, trash/restore and portable ZIP export.
