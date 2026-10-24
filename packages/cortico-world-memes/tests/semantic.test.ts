@@ -28,9 +28,7 @@ it('recall returns ranked candidates without any generation call and reuses quer
 });
 it('gates and empty candidates return facts without making a final selection', async () => {
   const { instance, cfg } = await setup(async () => { throw new Error('Unexpected generation'); });
-  cfg.memes.probability = 0;
-  expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toEqual({ candidates: [], reason: 'probability', sent: false });
-  cfg.memes.probability = 100; cfg.memes.maxMemes = 0;
+  cfg.memes.maxMemes = 0;
   expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toMatchObject({ candidates: [], reason: 'disabled' });
   cfg.memes.maxMemes = 1;
   await expect(instance.semantic.recall({ keywords: ['抱抱'] })).rejects.toThrow('index unavailable');

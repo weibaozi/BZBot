@@ -1,5 +1,10 @@
 # `definition.ts` / `MemesWorld`
 
+## 0.5.1
+
+- Remove the random `probability` gate, which discarded a round after the model had already chosen to search. The expression preset now states the intended frequency (about one meme per five replies) and leaves the decision to the conversation model; a saved `probability` value is ignored.
+- Rewrite the expression preset in Chinese, shorter and focused on natural use.
+
 ## 0.5.0
 
 - Rename the package and World to `cortico-world-memes` / `memes`; tools are `search_meme` and `get_meme`.

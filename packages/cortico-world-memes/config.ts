@@ -4,13 +4,13 @@ export interface MemesConfigSection {
   enabled: boolean;
   memes: { enabled: boolean; pythonFile: string; embeddingUrl: string; embeddingModel: string; queryPrefix: string; topK: number;
     visionUrl: string; visionModel: string; minScore: number;
-    probability: number; maxMemes: number; timeoutSeconds: number };
+    maxMemes: number; timeoutSeconds: number };
 }
 export const MEMES_DEFAULTS: MemesConfigSection = {
   enabled: false,
   memes: { enabled: true, pythonFile: 'python', embeddingUrl: '', embeddingModel: 'BAAI/bge-small-zh-v1.5', queryPrefix: '', topK: 5,
     visionUrl: '', visionModel: '', minScore: 0.25,
-    probability: 100, maxMemes: 1, timeoutSeconds: 30 },
+    maxMemes: 1, timeoutSeconds: 30 },
 };
 export function memesConfigGroup(language: Language): ConfigGroup {
   const t = (zh: string, en: string) => language.startsWith('zh') ? zh : en;
@@ -24,7 +24,6 @@ export function memesConfigGroup(language: Language): ConfigGroup {
     'worlds.memes.memes.minScore': { type: 'number', title: t('最低相似度', 'Minimum similarity'), minimum: -1, maximum: 1, 'x-hot': true },
     'worlds.memes.memes.visionUrl': { type: 'string', title: t('视觉标注模型地址（OpenAI 兼容 /v1）', 'Caption model base URL (OpenAI compatible /v1)'), 'x-hot': true },
     'worlds.memes.memes.visionModel': { type: 'string', title: t('视觉标注模型名称', 'Caption model name'), 'x-hot': true },
-    'worlds.memes.memes.probability': { type: 'integer', title: t('配图概率（%）', 'Selection probability (%)'), minimum: 0, maximum: 100, 'x-hot': true },
     'worlds.memes.memes.maxMemes': { type: 'integer', title: t('每次选图上限（0 关闭，1 单张）', 'Images per selection (0 off, 1 single)'), minimum: 0, maximum: 1, 'x-hot': true },
     'worlds.memes.memes.timeoutSeconds': { type: 'integer', title: t('视觉标注调用超时（秒）', 'Caption request timeout (seconds)'), minimum: 5, maximum: 120, 'x-hot': true },
   } } };

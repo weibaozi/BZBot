@@ -45,7 +45,6 @@ export class MemeSemantic {
     const cfg = this.config();
     signal?.throwIfAborted();
     if (!cfg.enabled || cfg.maxMemes === 0) return { candidates: [], reason: 'disabled', sent: false };
-    if (Math.random() * 100 >= cfg.probability) return { candidates: [], reason: 'probability', sent: false };
     if (!Array.isArray(input.keywords) || input.keywords.length < 1 || input.keywords.length > 8
       || input.keywords.some(word => typeof word !== 'string' || !word.trim() || word.length > 200))
       throw new Error('keywords must contain 1–8 non-empty strings of at most 200 characters');
