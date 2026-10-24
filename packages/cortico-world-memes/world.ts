@@ -8,7 +8,8 @@ import { memesConfigGroup, type MemesConfigSection } from './config.ts';
 import { MemeLibrary } from './server/library.ts';
 import { MemeSearch, type Embed } from './server/search.ts';
 import { MemeSemantic, type Progress } from './server/semantic.ts';
-import { type Generate } from './server/models.ts';
+import { generateHttp, type Generate } from './server/models.ts';
+import { SharedModels } from './server/shared-models.ts';
 
 export const MEMES_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
   { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags and ids; sends nothing. Call at most once per reply.',
@@ -21,22 +22,29 @@ export class MemesWorld implements World {
   readonly library: MemeLibrary;
   readonly search: MemeSearch;
   readonly semantic: MemeSemantic;
+  private host?: WorldHost;
+  private shared: SharedModels;
   private abort = new AbortController();
   private pending?: Promise<void>;
   private jobAbort?: AbortController;
   private job: { state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; operation?: string; result?: unknown; error?: string; progress?: Progress } = { state: 'idle' };
   constructor(private ctx: WorldContext<MemesConfigSection>, embed?: Embed, generate?: Generate) {
     this.library = new MemeLibrary(join(ctx.botDir, 'memes'));
-    this.search = new MemeSearch(this.library, () => ({ url: ctx.cfg.memes.embeddingUrl, model: ctx.cfg.memes.embeddingModel,
+    this.shared = new SharedModels(undefined, ctx.repoRoot, () => this.host);
+    this.search = new MemeSearch(this.library, () => ctx.cfg.memes.embeddingProvider
+      ? this.shared.embedding(ctx.cfg.memes.embeddingProvider, ctx.cfg.memes.queryPrefix)
+      : ({ url: ctx.cfg.memes.embeddingUrl, model: ctx.cfg.memes.embeddingModel,
       queryPrefix: ctx.cfg.memes.queryPrefix, key: ctx.secret('CORTICO_MEME_EMBEDDING_KEY') }), embed);
     this.semantic = new MemeSemantic(this.library, this.search, () => ctx.cfg.memes, () => ({
       url: ctx.cfg.memes.visionUrl, model: ctx.cfg.memes.visionModel,
       key: ctx.secret('CORTICO_MEME_VISION_KEY'), timeoutSeconds: ctx.cfg.memes.timeoutSeconds,
-    }), generate);
+    }), generate ?? ((input, options, signal) => ctx.cfg.memes.visionProvider
+      ? this.shared.generate(ctx.cfg.memes.visionProvider, input, options.timeoutSeconds, signal)
+      : generateHttp(input, options, signal)));
   }
   envPromptVars() { return this.ctx.cfg.memes.enabled ? {} : null; }
-  async start(_host: WorldHost) { this.abort = new AbortController(); }
-  async stop() { this.abort.abort(); await this.pending; }
+  async start(host: WorldHost) { this.host = host; this.abort = new AbortController(); }
+  async stop() { this.abort.abort(); await this.pending; await this.shared.stop(); this.host = undefined; }
   tools(): ToolDef[] {
     return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');
@@ -109,7 +117,7 @@ export class MemesWorld implements World {
           const { packId, directory } = arg;
           return this.launch('export', signal => this.library.exportZip(packId, directory, this.ctx.cfg.memes.pythonFile, signal));
         }
-        if (method === 'settings') return { schema: memesConfigGroup(language).schema, values: this.ctx.cfg.memes,
+        if (method === 'settings') return { schema: memesConfigGroup(language).schema, values: this.ctx.cfg.memes, models: this.shared.list(),
           keys: Object.fromEntries(['EMBEDDING', 'VISION'].map(kind => [kind.toLowerCase(), Boolean(this.ctx.secret(`CORTICO_MEME_${kind}_KEY`))])) };
         if (method === 'key') {
           if (typeof arg.key !== 'string' || !arg.key.trim()) throw new Error('Key cannot be empty');

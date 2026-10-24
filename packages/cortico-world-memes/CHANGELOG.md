@@ -1,5 +1,11 @@
 # `definition.ts` / `MemesWorld`
 
+## 0.6.0
+
+- Select saved global endpoints for embeddings and visual captions from the management panel.
+- Reuse provider adapters, model settings and stored API keys or login credentials for visual captions; retain custom endpoints as an option.
+- Refresh saved model selections without copying credentials into the panel or changing the main conversation model.
+
 ## 0.5.1
 
 - Remove the random `probability` gate, which discarded a round after the model had already chosen to search. The expression preset now states the intended frequency (about one meme per five replies) and leaves the decision to the conversation model; a saved `probability` value is ignored.

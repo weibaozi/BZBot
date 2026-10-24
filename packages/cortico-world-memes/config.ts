@@ -2,14 +2,14 @@ import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { Language } from 'cortico/core/language.ts';
 export interface MemesConfigSection {
   enabled: boolean;
-  memes: { enabled: boolean; pythonFile: string; embeddingUrl: string; embeddingModel: string; queryPrefix: string; topK: number;
-    visionUrl: string; visionModel: string; minScore: number;
+  memes: { enabled: boolean; pythonFile: string; embeddingProvider: string; embeddingUrl: string; embeddingModel: string; queryPrefix: string; topK: number;
+    visionProvider: string; visionUrl: string; visionModel: string; minScore: number;
     maxMemes: number; timeoutSeconds: number };
 }
 export const MEMES_DEFAULTS: MemesConfigSection = {
   enabled: false,
-  memes: { enabled: true, pythonFile: 'python', embeddingUrl: '', embeddingModel: 'BAAI/bge-small-zh-v1.5', queryPrefix: '', topK: 5,
-    visionUrl: '', visionModel: '', minScore: 0.25,
+  memes: { enabled: true, pythonFile: 'python', embeddingProvider: '', embeddingUrl: '', embeddingModel: 'BAAI/bge-small-zh-v1.5', queryPrefix: '', topK: 5,
+    visionProvider: '', visionUrl: '', visionModel: '', minScore: 0.25,
     maxMemes: 1, timeoutSeconds: 30 },
 };
 export function memesConfigGroup(language: Language): ConfigGroup {
@@ -17,6 +17,8 @@ export function memesConfigGroup(language: Language): ConfigGroup {
   return { id: 'world:memes', owner: 'world:memes', schema: { type: 'object', title: t('向量召回 · 主模型选图', 'Vector retrieval · conversation model selection'), properties: {
     'worlds.memes.memes.enabled': { type: 'boolean', title: t('启用表情检索', 'Enable meme retrieval'), 'x-hot': true },
     'worlds.memes.memes.pythonFile': { type: 'string', title: t('Python 程序路径（导入 ZIP）', 'Python executable (ZIP import)'), 'x-hot': true },
+    'worlds.memes.memes.embeddingProvider': { type: 'string', title: t('全局 Embedding 模型（空值使用自定义端点）', 'Global embedding model (empty for custom endpoint)'), 'x-hot': true },
+    'worlds.memes.memes.visionProvider': { type: 'string', title: t('全局视觉模型（空值使用自定义端点）', 'Global vision model (empty for custom endpoint)'), 'x-hot': true },
     'worlds.memes.memes.embeddingUrl': { type: 'string', title: t('Embedding 基础地址（以 /v1 结尾）', 'Embedding base URL (ending in /v1)'), 'x-hot': true },
     'worlds.memes.memes.embeddingModel': { type: 'string', title: t('Embedding 模型', 'Embedding model'), 'x-hot': true },
     'worlds.memes.memes.queryPrefix': { type: 'string', title: t('查询前缀（与模型服务约定一致）', 'Query prefix (match your model service)'), 'x-hot': true },
