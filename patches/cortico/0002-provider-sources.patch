@@ -1,5 +1,5 @@
 diff --git a/docs/providers.md b/docs/providers.md
-index e28bebe..9bfeb9b 100644
+index e3d5b4d..7c5b3bd 100644
 --- a/docs/providers.md
 +++ b/docs/providers.md
 @@ -1,4 +1,4 @@
@@ -32,7 +32,7 @@ index e28bebe..9bfeb9b 100644
 +
  ## WebUI
  
- 新建端点的生成配置默认最大输出 8192 token、上下文上限 1,000,000 token，温度留空，使用模型默认值；
+ 模型供应商页列出共享端点,一次编辑其中一条。选中一条不改变 `activeProvider`,「设为当前」只写
 diff --git a/src/deploy.ts b/src/deploy.ts
 index 9bf7d9d..39d536b 100644
 --- a/src/deploy.ts
@@ -327,7 +327,7 @@ index 0000000..0e1b218
 +  return flattenSource(source, readConfig(root, source) as ProviderSource);
 +}
 diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
-index f4d219a..26f2992 100644
+index 1b687a6..99486bb 100644
 --- a/src/providers/webui/hub.ts
 +++ b/src/providers/webui/hub.ts
 @@ -9,7 +9,8 @@ import { readJsonObject, updateJsonObject, writeSecretFile } from '../../config-
@@ -374,7 +374,7 @@ index f4d219a..26f2992 100644
    }
    moduleList(language: Language) {
      return this.modules.map(module => ({ id: module.id, title: module.localize?.(language)?.title ?? module.title,
-@@ -163,7 +160,10 @@ export class ProviderHub {
+@@ -162,7 +159,10 @@ export class ProviderHub {
        const file = join(parent, dir.name, 'config.json');
        if (existsSync(file) && existsSync(join(parent, dir.name, 'deployment.json'))) files.add(file);
      }
@@ -386,7 +386,7 @@ index f4d219a..26f2992 100644
    }
    private locked<T>(work: () => T): T {
      mkdirSync(this.root, { recursive: true });
-@@ -182,6 +182,9 @@ export class ProviderHub {
+@@ -181,6 +181,9 @@ export class ProviderHub {
        const prior = original ? this.config.providers[original] : undefined;
        if (original && !prior) throw hubError(S => S.unknownInstance, 404);
        if (original) this.checkRevision(original, input.expectedRevision);
@@ -396,7 +396,7 @@ index f4d219a..26f2992 100644
        if (name !== original) {
          const problem = validateProviderName(name);
          if (problem) throw hubError(S => problem === 'shape' ? S.nameShape : S.nameReserved);
-@@ -231,7 +234,8 @@ export class ProviderHub {
+@@ -230,7 +233,8 @@ export class ProviderHub {
        try {
          if (!source) mkdirSync(stage, { mode: 0o700 });
          const dir = source ?? stage;
@@ -406,7 +406,7 @@ index f4d219a..26f2992 100644
          if (copiedSecret) writeSecretFile(join(dir, '.env'), copiedSecret);
          if (input.secretValue) {
            const file = join(dir, '.env');
-@@ -271,9 +275,14 @@ export class ProviderHub {
+@@ -270,9 +274,14 @@ export class ProviderHub {
        const refs = this.references(name);
        if (this.config.activeProvider === name || refs.length)
          throw hubError(S => refs.length ? S.inUse(refs.map(file => dirname(file).split(/[\\/]/).at(-1)).join(', ')) : S.deleteActive, 409);
@@ -660,10 +660,10 @@ index 7ef4283..8811a14 100644
    it('avatarFrom 复制成部署的头像;不给就没有头像', () => {
      const root = mkdtempSync(join(tmpdir(), 'deployment-avatar-'));
 diff --git a/tests/providers/hub.test.ts b/tests/providers/hub.test.ts
-index d480727..60d9f9b 100644
+index d117b3a..fae87a7 100644
 --- a/tests/providers/hub.test.ts
 +++ b/tests/providers/hub.test.ts
-@@ -177,3 +177,53 @@ it('module list carries the editor sections of each module in its declared order
+@@ -165,3 +165,53 @@ it('module list carries the editor sections of each module in its declared order
      expect(module.sections.map(section => section.defaultOpen)).toEqual(declared.map(panel => panel.defaultOpen));
    }
  });

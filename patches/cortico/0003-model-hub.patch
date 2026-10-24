@@ -25,7 +25,7 @@ index d594255..034272d 100644
  
  `createBot()` 的顺序:算提示词覆盖目录 → 定默认语言 → `WorldAssembly` → `build()` → `Core` →
 diff --git a/docs/providers.md b/docs/providers.md
-index 9bfeb9b..06af992 100644
+index 7c5b3bd..8c515ef 100644
 --- a/docs/providers.md
 +++ b/docs/providers.md
 @@ -1,4 +1,4 @@
@@ -54,7 +54,7 @@ index 9bfeb9b..06af992 100644
 +
  ## WebUI
  
- 新建端点的生成配置默认最大输出 8192 token、上下文上限 1,000,000 token，温度留空，使用模型默认值；
+ 模型供应商页列出共享端点,一次编辑其中一条。选中一条不改变 `activeProvider`,「设为当前」只写
 diff --git a/docs/worlds.md b/docs/worlds.md
 index c46f6d1..5498b76 100644
 --- a/docs/worlds.md
@@ -168,18 +168,18 @@ index 08cb79c..fe1aa85 100644
  | `pricebook.ts` | 价目定义、快照、报价合并 |
  | `webui/` | provider 页的服务端:`ProviderSettings`(落盘、密钥、探活) |
 diff --git a/src/providers/base.ts b/src/providers/base.ts
-index bc12329..c297d93 100644
+index 2649d21..11cf127 100644
 --- a/src/providers/base.ts
 +++ b/src/providers/base.ts
-@@ -14,6 +14,7 @@ import type { Request } from '../protocol/open-responses/index.ts';
+@@ -13,6 +13,7 @@ import type { PriceDefinition, QuoteTime } from './pricebook.ts';
+ import type { Request } from '../protocol/open-responses/index.ts';
  import type { ContextRecord } from '../protocol/open-responses/context.ts';
  import type { GenerateOptions, Generation, GenerationError, ResponseClient } from '../core/generation.ts';
- import type { EffortPreset } from './effort-presets.ts';
 +import type { ModelType } from './store.ts';
  
  /** Providers expose standard Responses and own their native transport semantics. */
  export abstract class BaseProvider implements ResponseClient {
-@@ -100,6 +101,8 @@ export interface ProviderModule {
+@@ -99,6 +100,8 @@ export interface ProviderModule {
    description?: string;
    /** 自描述,给人和扩展市场看。 */
    describe?: ProviderDescribe;
@@ -400,7 +400,7 @@ index 0000000..bf3a464
 +/** 非对话模型单次请求的上限;语音合成与长文本嵌入在本机服务上可能要十几秒。 */
 +const REQUEST_TIMEOUT_MS = 60_000;
 diff --git a/src/providers/openai-responses-compat/index.ts b/src/providers/openai-responses-compat/index.ts
-index 6db9a68..49c6884 100644
+index 4533067..4bc5a5b 100644
 --- a/src/providers/openai-responses-compat/index.ts
 +++ b/src/providers/openai-responses-compat/index.ts
 @@ -57,6 +57,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {

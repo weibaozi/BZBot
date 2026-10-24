@@ -31,7 +31,7 @@
 
 候选通过普通工具回执追加到同一个 session，主模型复用已有上下文判断选一张或不选，无需复制聊天历史、人设或启动另一个模型会话。相似度只用于召回，主模型可以选择较低排名的候选。动态候选不进入系统前缀；编辑预设模板后，按 Cortico 的提示词加载流程生效，立即重载前缀会损失一次缓存。
 
-选中后 `get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0003-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
+选中后 `get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0001-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
 
 全局模型下拉框从共享供应商目录读取已保存的端点与模型，选择只保存端点名。视觉标注通过 Cortico 的 ProviderRegistry 复用供应商协议、模型参数、API Key 或已有登录凭据；图片输入需要在该供应商中启用。生成用量计入表情 World。全局 embedding 复用端点地址、模型名和密钥调用 `/embeddings`，需要端点实际支持 embedding；ChatGPT 等登录供应商不能直接充当 embedding。选择失效时报告错误，不静默切回其他模型。
 

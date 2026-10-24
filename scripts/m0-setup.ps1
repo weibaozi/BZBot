@@ -38,18 +38,25 @@ git -C $cortico checkout --quiet $CorticoCommit; Check "git checkout"
 Write-Host "Cortico at $(git -C $cortico log -1 --format='%h %cd')"
 
 Step "Applying myBot's patches to Cortico (patches\cortico\*.patch)"
-# Each patch is one change we need from Cortico until it lands upstream. A patch that is already
-# in the working copy is skipped, so the script can run again on the same checkout.
+# Each patch is one change we need from Cortico until it lands upstream. Later patches edit lines
+# earlier ones added, so the series is applied as a whole to a clean checkout and recorded in a
+# marker inside .git; a run with the same series skips it.
 $patched = $false
-foreach ($patch in Get-ChildItem (Join-Path $root "patches\cortico") -Filter *.patch -ErrorAction SilentlyContinue | Sort-Object Name) {
-  $ErrorActionPreference = "Continue"
-  git -C $cortico apply --reverse --check $patch.FullName 2>&1 | Out-Null
-  $alreadyApplied = $LASTEXITCODE -eq 0
-  $ErrorActionPreference = "Stop"
-  if ($alreadyApplied) { Write-Host "already applied: $($patch.Name)"; continue }
-  git -C $cortico apply $patch.FullName; Check "git apply $($patch.Name)"
-  Write-Host "applied: $($patch.Name)"
-  $patched = $true
+$patches = @(Get-ChildItem (Join-Path $root "patches\cortico") -Filter *.patch -ErrorAction SilentlyContinue | Sort-Object Name)
+$series = ($patches | ForEach-Object { "$($_.Name) $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join "`n"
+$marker = Join-Path $cortico ".git\mybot-patches"
+if ((Test-Path $marker) -and ([System.IO.File]::ReadAllText($marker) -eq $series)) {
+  Write-Host "already applied: $($patches.Count) patches"
+} else {
+  if (git -C $cortico status --porcelain) {
+    throw "vendor\cortico has local changes or an older patch series. Run: git -C vendor\cortico checkout . ; git -C vendor\cortico clean -fd   then run this script again."
+  }
+  foreach ($patch in $patches) {
+    git -C $cortico apply $patch.FullName; Check "git apply $($patch.Name)"
+    Write-Host "applied: $($patch.Name)"
+  }
+  Write-Utf8 $marker $series
+  $patched = $patches.Count -gt 0
 }
 
 Step "Installing Cortico dependencies"
