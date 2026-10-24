@@ -1,0 +1,17 @@
+{
+  "provider": {
+    "protocols": [
+      "openai-responses"
+    ],
+    "auth": [
+      "oauth"
+    ],
+    "local": false,
+    "input": [
+      "text",
+      "image"
+    ],
+    "title": "ChatGPT",
+    "description": "Sign in with ChatGPT to use your plan. Local myBot tools and memory stay in myBot."
+  }
+}

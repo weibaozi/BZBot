@@ -1,0 +1,31 @@
+{
+  "name": "cortico-provider-chatgpt",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@12.15.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Use a ChatGPT plan through Sign in with ChatGPT",
+  "main": "./index.ts",
+  "keywords": [
+    "cortico-provider"
+  ],
+  "cortico": {
+    "kind": "provider",
+    "api": 6,
+    "displayName": "ChatGPT",
+    "webUiClient": "dist/webui.js",
+    "describe": "describe.json"
+  },
+  "scripts": {
+    "test": "node ../../vendor/cortico/node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.web.json",
+    "build:webui": "node scripts/build-webui.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.2.13"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}
