@@ -1,0 +1,823 @@
+diff --git a/docs/providers.md b/docs/providers.md
+index e28bebe..9bfeb9b 100644
+--- a/docs/providers.md
++++ b/docs/providers.md
+@@ -1,4 +1,4 @@
+-<!-- Owner: src/providers/base.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/openai-responses-compat/native.ts, src/providers/llamacpp/config.ts, src/providers/llamacpp/options.ts, src/providers/llamacpp/native.ts, src/providers/llamacpp/huggingface.ts, src/providers/transport/responses-input.ts, src/providers/pricebook.ts, src/core/generation.ts (PriceSnapshot, priceUsage) -->
++<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/openai-responses-compat/native.ts, src/providers/llamacpp/config.ts, src/providers/llamacpp/options.ts, src/providers/llamacpp/native.ts, src/providers/llamacpp/huggingface.ts, src/providers/transport/responses-input.ts, src/providers/pricebook.ts, src/core/generation.ts (PriceSnapshot, priceUsage) -->
+ 
+ # Provider
+ 
+@@ -25,10 +25,23 @@ provider 模块不预设任何模型名;端点
+ 
+ ## 端点目录
+ 
+-同一部署根下的各部署共用端点配置。每个 `<部署根>/providers/<端点名>/` 目录包含端点的
++同一部署根下的各部署共用端点配置。每个 `<部署根>/providers/<目录名>/` 目录包含
+ `config.json` 和存放密钥的 `.env`，同名密钥优先读取进程环境。目录内其余文件由 provider
+ 模块管理。各部署在自己的 `config.json` 中设置 `activeProvider`。
+ 
++`config.json` 有两种格式，读写见 `src/providers/store.ts`：
++
++- **端点**：一条 `LLMProviderEntry`，端点名是目录名。
++- **供应商**：带 `models` 表。`kind`、`baseUrl`、`secret`、`options` 归供应商；`models` 的键是模型 id，
++  每项可写 `type`（`chat` / `embedding` / `rerank` / `stt` / `tts`，缺省 `chat`）、`enabled`（缺省启用）、
++  `spec`、`pricing`、`multimodal`、`serviceTier`。每个启用的对话模型展开成一个端点，名字是模型引用
++  `<目录名>/<模型 id>`；模型 id 可以含 `/`，按第一个 `/` 切分。同一供应商的模型共用目录、密钥与 provider
++  状态，`spec.model` 缺省取模型 id。
++
++`activeProvider` 存端点名或模型引用。存的是一个已改成供应商格式的目录名时，指向其中唯一的启用对话模型。
++WebUI 编辑供应商下的模型时只改参数：共用字段写回供应商，生成参数写回这个模型；改名与换模型不在这里做，
++删除只删这个模型，供应商与密钥保留。
++
+ ## WebUI
+ 
+ 新建端点的生成配置默认最大输出 8192 token、上下文上限 1,000,000 token，温度留空，使用模型默认值；
+diff --git a/src/deploy.ts b/src/deploy.ts
+index 9bf7d9d..39d536b 100644
+--- a/src/deploy.ts
++++ b/src/deploy.ts
+@@ -10,6 +10,7 @@ import { deepMerge, type LoadedConfig } from './core/config.ts';
+ import { secretReader } from './core/secrets.ts';
+ import { readTextFile } from './core/util.ts';
+ import { deploymentRoot, repoRoot as codeRepoRoot } from './paths.ts';
++import { canonicalName, readProviders } from './providers/store.ts';
+ 
+ export type { LoadedConfig } from './core/config.ts';
+ 
+@@ -85,22 +86,11 @@ export interface DeploymentSource<C extends CoreConfig> {
+ }
+ 
+ /**
+- * 读取 <部署根>/providers/<端点名>/config.json，供同一部署根下的部署共享。
++ * 读取 <部署根>/providers/ 展开后的端点表(格式见 providers/store.ts)，供同一部署根下的部署共享。
+  * 同名条目覆盖 Core 默认端点；目录内的密钥与其他状态由 provider 管理。
+  */
+ function globalProviders(providersDir: string): Record<string, LLMProviderEntry> {
+-  if (!existsSync(providersDir)) return {};
+-  const table: Record<string, LLMProviderEntry> = {};
+-  for (const name of readdirSync(providersDir)) {
+-    const file = resolve(providersDir, name, 'config.json');
+-    if (!existsSync(file)) continue;
+-    try {
+-      table[name] = JSON.parse(readTextFile(file)) as LLMProviderEntry;
+-    } catch (err) {
+-      throw new Error(`${file} 解析失败:${err instanceof Error ? err.message : String(err)}`);
+-    }
+-  }
+-  return table;
++  return { ...readProviders(providersDir) };
+ }
+ 
+ /**
+@@ -154,6 +144,7 @@ export function loadDeployment<C extends CoreConfig>(
+     ),
+     raw,
+   );
++  config.activeProvider = canonicalName(config.activeProvider, config.providers);
+ 
+   const abs = (p: string): string => (isAbsolute(p) ? p : resolve(dir, p));
+   return {
+diff --git a/src/paths.ts b/src/paths.ts
+index e33d218..75f39d0 100644
+--- a/src/paths.ts
++++ b/src/paths.ts
+@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
+ import { existsSync } from 'node:fs';
+ import { dirname, isAbsolute, resolve } from 'node:path';
+ import { readTextFile } from './core/util.ts';
++import { sourceOf } from './providers/name.ts';
+ 
+ /** 默认部署目录，相对主仓库根；该目录不纳入版本控制。 */
+ const DEFAULT_DEPLOYMENT_DIRNAME = 'deployments';
+@@ -109,11 +110,11 @@ export function providersRoot(): string {
+ }
+ 
+ /**
+- * 端点目录以 config.providers 的键命名；同一 provider 模块可有多个端点。
++ * 端点名所在的目录：旧格式端点是同名目录，模型引用 `<供应商>/<模型>` 是供应商目录。
+  * 目录内部结构由 provider 管理。
+  */
+ export function providerDir(name: string): string {
+-  return resolve(providersRoot(), name);
++  return resolve(providersRoot(), sourceOf(name));
+ }
+ 
+ /**
+diff --git a/src/providers/README.md b/src/providers/README.md
+index 833ca27..08cb79c 100644
+--- a/src/providers/README.md
++++ b/src/providers/README.md
+@@ -1,4 +1,4 @@
+-<!-- Owner: src/providers/base.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/transport/responses-input.ts, src/providers/transport/history.ts, src/providers/llamacpp/native.ts -->
++<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/transport/responses-input.ts, src/providers/transport/history.ts, src/providers/llamacpp/native.ts -->
+ 
+ # src/providers
+ 
+@@ -12,6 +12,7 @@
+ |---|---|
+ | `base.ts` | 三个接口与 `BaseProvider`(抽象 `respond`) |
+ | `registry.ts` | 目录扫描发现内建模块、`registerProviderModules()` 收扩展、实例缓存与 `bind()` |
++| `store.ts` | `providers/` 目录的读写:端点与供应商两种格式展开成端点表,写回名字所在的目录 |
+ | `configuration.ts` | `validateSpec` / `validateEntry`:外部配置校验 |
+ | `pricebook.ts` | 价目定义、快照、报价合并 |
+ | `webui/` | provider 页的服务端:`ProviderSettings`(落盘、密钥、探活) |
+diff --git a/src/providers/name.ts b/src/providers/name.ts
+index f4065a9..135b27a 100644
+--- a/src/providers/name.ts
++++ b/src/providers/name.ts
+@@ -9,3 +9,19 @@ export function validateProviderName(name: string): 'shape' | 'reserved' | null
+ export function defaultSecretName(name: string): string {
+   return `CORTICO_KEY_${name.toUpperCase().replace(/-/g, '_')}`;
+ }
++
++/** 名字的供应商段,即目录名。模型 id 本身可含 `/`,只按第一个 `/` 切分。 */
++export function sourceOf(name: string): string {
++  const at = name.indexOf('/');
++  return at < 0 ? name : name.slice(0, at);
++}
++
++/** 模型引用的模型 id;旧格式端点名返回 null。 */
++export function modelOf(name: string): string | null {
++  const at = name.indexOf('/');
++  return at < 0 ? null : name.slice(at + 1);
++}
++
++export function modelRef(source: string, model: string): string {
++  return `${source}/${model}`;
++}
+diff --git a/src/providers/registry.ts b/src/providers/registry.ts
+index 944d814..5d835c8 100644
+--- a/src/providers/registry.ts
++++ b/src/providers/registry.ts
+@@ -7,6 +7,7 @@ import { quotePrices } from './pricebook.ts';
+ import { createHash } from 'node:crypto';
+ import { secretReader } from '../core/secrets.ts';
+ import type { ResponseClient } from '../core/generation.ts';
++import { sourceOf } from './name.ts';
+ 
+ /** Modules are discovered from providers/<module>/index.ts. */
+ export async function discoverProviderModules(
+@@ -85,7 +86,8 @@ export class ProviderRegistry {
+     const entry = module.normalize?.(structuredClone(raw)) ?? structuredClone(raw);
+     const { pricing: _pricing, spec: _spec, ...transportEntry } = entry;
+     // 密钥在实例创建时定格,`.env` 的内容指纹进缓存键:文件变更后下一次解析重建实例。
+-    const stateDir = join(this.host.stateRoot, name);
++    // 同一供应商的模型共用供应商目录:密钥与登录状态只有一份。
++    const stateDir = join(this.host.stateRoot, sourceOf(name));
+     const envFile = join(stateDir, '.env');
+     const fingerprint = existsSync(envFile) ? createHash('sha256').update(readFileSync(envFile)).digest('hex') : '';
+     const key = JSON.stringify([transportEntry, fingerprint]);
+diff --git a/src/providers/store.ts b/src/providers/store.ts
+new file mode 100644
+index 0000000..0e1b218
+--- /dev/null
++++ b/src/providers/store.ts
+@@ -0,0 +1,152 @@
++/**
++ * `<部署根>/providers/` 的读写。一个目录有两种格式:
++ * - 旧格式:目录即端点,`config.json` 是一条 `LLMProviderEntry`,端点名 = 目录名。
++ * - 供应商格式:`config.json` 带 `models`,地址、协议、密钥与模块选项归供应商,模型各带类型与生成参数。
++ *   启用的对话模型展开成端点,名字是模型引用 `<供应商>/<模型 id>`。
++ * Core 只看展开后的端点表;目录、密钥与 provider 状态按名字的供应商段定位,同一供应商的模型共用。
++ */
++import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
++import { join } from 'node:path';
++import type { LLMProviderEntry, ModelSpec } from '../core/types.ts';
++import type { PriceDefinition } from './pricebook.ts';
++import { readTextFile } from '../core/util.ts';
++import { updateJsonObject } from '../config-file.ts';
++import { modelOf, modelRef, sourceOf } from './name.ts';
++
++export type ModelType = 'chat' | 'embedding' | 'rerank' | 'stt' | 'tts';
++
++/** 供应商下的一个模型。`type` 缺省为对话,`enabled` 缺省为启用。 */
++export interface SourceModel {
++  type?: ModelType;
++  enabled?: boolean;
++  spec?: ModelSpec;
++  pricing?: PriceDefinition[];
++  multimodal?: boolean;
++  serviceTier?: string;
++}
++
++/** 供应商格式的 `config.json`。`models` 的键是模型 id,也是模型引用的第二段。 */
++export interface ProviderSource extends Omit<LLMProviderEntry, 'spec' | 'pricing' | 'multimodal' | 'serviceTier'> {
++  models: Record<string, SourceModel>;
++}
++
++/** 属于模型的端点字段;其余字段归供应商,同一供应商的模型共用。 */
++const MODEL_FIELDS = ['spec', 'pricing', 'multimodal', 'serviceTier'] as const;
++
++export function isProviderSource(raw: unknown): raw is ProviderSource {
++  const models = (raw as { models?: unknown } | null)?.models;
++  return !!models && typeof models === 'object' && !Array.isArray(models);
++}
++
++/** 供应商的启用对话模型展开成端点;`spec.model` 缺省取模型 id。 */
++export function flattenSource(source: string, file: ProviderSource): Record<string, LLMProviderEntry> {
++  const { models, ...shared } = file;
++  const table: Record<string, LLMProviderEntry> = {};
++  for (const [id, model] of Object.entries(models)) {
++    if ((model.type ?? 'chat') !== 'chat' || model.enabled === false) continue;
++    const { type: _type, enabled: _enabled, ...fields } = structuredClone(model);
++    if (fields.spec && !fields.spec.model) fields.spec.model = id;
++    table[modelRef(source, id)] = { ...structuredClone(shared), ...fields };
++  }
++  return table;
++}
++
++/** 以 `.` 开头的目录是写锁、事务暂存与待删目录,不是供应商。 */
++function sourceDirs(root: string): string[] {
++  if (!existsSync(root)) return [];
++  return readdirSync(root, { withFileTypes: true })
++    .filter((dir) => dir.isDirectory() && !dir.name.startsWith('.') && existsSync(join(root, dir.name, 'config.json')))
++    .map((dir) => dir.name);
++}
++
++function readConfig(root: string, source: string): unknown {
++  const file = join(root, source, 'config.json');
++  try {
++    return JSON.parse(readTextFile(file));
++  } catch (err) {
++    throw new Error(`${file} 解析失败:${err instanceof Error ? err.message : String(err)}`);
++  }
++}
++
++/** 读出整个目录展开后的端点表。 */
++export function readProviders(root: string): Record<string, LLMProviderEntry> {
++  const table: Record<string, LLMProviderEntry> = Object.create(null);
++  for (const source of sourceDirs(root)) {
++    const raw = readConfig(root, source);
++    Object.assign(table, isProviderSource(raw) ? flattenSource(source, raw) : { [source]: raw as LLMProviderEntry });
++  }
++  return table;
++}
++
++/** 名字所在的目录:旧格式是端点目录,模型引用是供应商目录。 */
++export function entryDir(root: string, name: string): string {
++  return join(root, sourceOf(name));
++}
++
++/**
++ * 把 `activeProvider` 一类的存量名字换成端点表里的名字:目录改成供应商格式后,旧的目录名
++ * 指向其中唯一的启用对话模型;对不上的原样返回,由使用方报不存在。
++ */
++export function canonicalName(name: string, table: Readonly<Record<string, LLMProviderEntry>>): string {
++  if (!name || table[name] || name.includes('/')) return name;
++  const refs = Object.keys(table).filter((key) => sourceOf(key) === name && key !== name);
++  return refs.length === 1 ? refs[0] : name;
++}
++
++/** 端点表里属于 `source` 的条目换成 `next`。 */
++export function replaceSource(
++  table: Readonly<Record<string, LLMProviderEntry>>,
++  source: string,
++  next: Readonly<Record<string, LLMProviderEntry>>,
++): Record<string, LLMProviderEntry> {
++  const kept = Object.entries(table).filter(([name]) => sourceOf(name) !== source);
++  return Object.assign(Object.create(null), Object.fromEntries(kept), next);
++}
++
++/**
++ * 写一条端点。旧格式整份替换端点目录的 `config.json`;模型引用改供应商的共用字段与这个模型的字段,
++ * 同一供应商的其他模型及非对话模型保留。返回这个目录写后展开的端点表。
++ * 模型引用要求供应商已存在,且 `spec.model` 等于模型 id。
++ */
++export function writeEntry(root: string, name: string, entry: LLMProviderEntry): Record<string, LLMProviderEntry> {
++  const source = sourceOf(name);
++  const model = modelOf(name);
++  const file = join(root, source, 'config.json');
++  if (model === null) {
++    mkdirSync(join(root, source), { recursive: true });
++    updateJsonObject(file, (raw) => {
++      for (const key of Object.keys(raw)) delete raw[key];
++      Object.assign(raw, structuredClone(entry));
++    });
++    return { [name]: structuredClone(entry) };
++  }
++  if (entry.spec && entry.spec.model !== model) throw new Error(`模型引用 ${name} 的 spec.model 必须是 ${model}`);
++  const current = existsSync(file) ? readConfig(root, source) : null;
++  if (!isProviderSource(current)) throw new Error(`供应商 ${source} 不存在`);
++  updateJsonObject(file, (raw) => {
++    const models = raw.models as Record<string, SourceModel>;
++    for (const key of Object.keys(raw)) if (key !== 'models') delete raw[key];
++    const next: Record<string, unknown> = { ...models[model] };
++    for (const field of MODEL_FIELDS) delete next[field];
++    for (const [key, value] of Object.entries(structuredClone(entry))) {
++      if ((MODEL_FIELDS as readonly string[]).includes(key)) next[key] = value;
++      else raw[key] = value;
++    }
++    models[model] = next as SourceModel;
++  });
++  return flattenSource(source, readConfig(root, source) as ProviderSource);
++}
++
++/** 删一条端点:旧格式删整个端点目录;模型引用只删这个模型,供应商与它的密钥保留。返回写后展开的端点表。 */
++export function removeEntry(root: string, name: string): Record<string, LLMProviderEntry> {
++  const source = sourceOf(name);
++  const model = modelOf(name);
++  if (model === null) {
++    rmSync(join(root, source), { recursive: true, force: true });
++    return {};
++  }
++  updateJsonObject(join(root, source, 'config.json'), (raw) => {
++    delete (raw.models as Record<string, SourceModel>)[model];
++  });
++  return flattenSource(source, readConfig(root, source) as ProviderSource);
++}
+diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
+index f4d219a..26f2992 100644
+--- a/src/providers/webui/hub.ts
++++ b/src/providers/webui/hub.ts
+@@ -9,7 +9,8 @@ import { readJsonObject, updateJsonObject, writeSecretFile } from '../../config-
+ import { readTextFile } from '../../core/util.ts';
+ import type { ProviderModule } from '../base.ts';
+ import { validateEntry, withContextWindows } from '../configuration.ts';
+-import { validateProviderName, defaultSecretName } from '../name.ts';
++import { validateProviderName, defaultSecretName, modelOf, sourceOf } from '../name.ts';
++import { canonicalName, readProviders, removeEntry, writeEntry } from '../store.ts';
+ import { providerModules, type ProviderRegistry } from '../registry.ts';
+ import type { ProviderSettings } from './settings.ts';
+ import { quotePrices } from '../pricebook.ts';
+@@ -34,8 +35,9 @@ export class ProviderHub {
+     private readonly settings: ProviderSettings, private readonly file: string,
+     private readonly root: string, private readonly modules: readonly ProviderModule[] = providerModules) {}
+ 
++  /** 名字所在的目录;模型引用落在供应商目录,同一供应商的模型共用版本号与密钥。 */
+   private path(name: string): string {
+-    const path = resolve(this.root, name);
++    const path = resolve(this.root, sourceOf(name));
+     if (!name || dirname(path) !== resolve(this.root)) throw hubError(S => S.invalidIdentifier);
+     return path;
+   }
+@@ -45,12 +47,7 @@ export class ProviderHub {
+       existsSync(join(dir, file)) ? readFileSync(join(dir, file)).toString('base64') : '').join(':')).digest('hex');
+   }
+   private refresh(): void {
+-    const entries: Record<string, LLMProviderEntry> = Object.create(null);
+-    if (existsSync(this.root)) for (const dir of readdirSync(this.root, { withFileTypes: true })) {
+-      if (!dir.isDirectory() || (dir.name === '.write-lock' || dir.name.startsWith('.transaction-') || dir.name.startsWith('.deleted-'))) continue;
+-      const file = join(this.root, dir.name, 'config.json');
+-      if (existsSync(file)) entries[dir.name] = JSON.parse(readTextFile(file));
+-    }
++    const entries = readProviders(this.root);
+     for (const name of new Set([...Object.keys(entries), ...Object.keys(this.config.providers)])) {
+       const revision = entries[name] ? this.revision(name) : '';
+       if (JSON.stringify(entries[name]) !== JSON.stringify(this.config.providers[name]) || this.revisions.get(name) !== revision) this.registry.invalidate(name);
+@@ -58,7 +55,7 @@ export class ProviderHub {
+     }
+     this.config.providers = entries;
+     const disk = readJsonObject(this.file);
+-    if (typeof disk.activeProvider === 'string') this.config.activeProvider = disk.activeProvider;
++    if (typeof disk.activeProvider === 'string') this.config.activeProvider = canonicalName(disk.activeProvider, entries);
+   }
+   moduleList(language: Language) {
+     return this.modules.map(module => ({ id: module.id, title: module.localize?.(language)?.title ?? module.title,
+@@ -163,7 +160,10 @@ export class ProviderHub {
+       const file = join(parent, dir.name, 'config.json');
+       if (existsSync(file) && existsSync(join(parent, dir.name, 'deployment.json'))) files.add(file);
+     }
+-    return [...files].filter(file => readJsonObject(file).activeProvider === name);
++    return [...files].filter(file => {
++      const active = readJsonObject(file).activeProvider;
++      return typeof active === 'string' && canonicalName(active, this.config.providers) === name;
++    });
+   }
+   private locked<T>(work: () => T): T {
+     mkdirSync(this.root, { recursive: true });
+@@ -182,6 +182,9 @@ export class ProviderHub {
+       const prior = original ? this.config.providers[original] : undefined;
+       if (original && !prior) throw hubError(S => S.unknownInstance, 404);
+       if (original) this.checkRevision(original, input.expectedRevision);
++      // 供应商下的模型由模型 id 定位,这里只改参数;改名与换模型在模型列表里做。
++      const model = original ? modelOf(original) : null;
++      if (model !== null && (name !== original || input.entry?.spec?.model !== model)) throw hubError(S => S.modelRefFixed);
+       if (name !== original) {
+         const problem = validateProviderName(name);
+         if (problem) throw hubError(S => problem === 'shape' ? S.nameShape : S.nameReserved);
+@@ -231,7 +234,8 @@ export class ProviderHub {
+       try {
+         if (!source) mkdirSync(stage, { mode: 0o700 });
+         const dir = source ?? stage;
+-        updateJsonObject(join(dir, 'config.json'), raw => { for (const key of Object.keys(raw)) delete raw[key]; Object.assign(raw, entry); });
++        if (model !== null) writeEntry(this.root, name, entry);
++        else updateJsonObject(join(dir, 'config.json'), raw => { for (const key of Object.keys(raw)) delete raw[key]; Object.assign(raw, entry); });
+         if (copiedSecret) writeSecretFile(join(dir, '.env'), copiedSecret);
+         if (input.secretValue) {
+           const file = join(dir, '.env');
+@@ -271,9 +275,14 @@ export class ProviderHub {
+       const refs = this.references(name);
+       if (this.config.activeProvider === name || refs.length)
+         throw hubError(S => refs.length ? S.inUse(refs.map(file => dirname(file).split(/[\\/]/).at(-1)).join(', ')) : S.deleteActive, 409);
++      this.registry.invalidate(name);
++      if (modelOf(name) !== null) {
++        removeEntry(this.root, name);
++        this.refresh();
++        return;
++      }
+       const tomb = join(this.root, `.deleted-${randomUUID()}`);
+       renameSync(this.path(name), tomb);
+-      this.registry.invalidate(name);
+       delete this.config.providers[name];
+       rmSync(tomb, { recursive: true, force: true });
+     });
+diff --git a/src/providers/webui/settings.ts b/src/providers/webui/settings.ts
+index 0525daf..3371d37 100644
+--- a/src/providers/webui/settings.ts
++++ b/src/providers/webui/settings.ts
+@@ -11,9 +11,11 @@ import {
+   readGroupValues,
+   setByPath,
+ } from '../../core/config-schema.ts';
+-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
++import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+ import { join } from 'node:path';
+ import { updateJsonObject, writeSecretFile } from '../../config-file.ts';
++import { entryDir, removeEntry, replaceSource, writeEntry } from '../store.ts';
++import { sourceOf } from '../name.ts';
+ import type { Language } from '../../core/language.ts';
+ import { isConnectionEditorBlock, type WebUiLamp, type WebUiPageContribution } from '../../web/shared/webui-protocol.ts';
+ import type { WebUiPageSource } from '../../web/webui-pages.ts';
+@@ -116,17 +118,16 @@ export class ProviderSettings {
+       raw.activeProvider = activeProvider;
+       raw.providerSchemaVersion = 3;
+     });
+-    const dir = join(this.providersDir, name);
+-    mkdirSync(dir, { recursive: true });
+-    updateJsonObject(join(dir, 'config.json'), (raw) => {
+-      for (const key of Object.keys(raw)) delete raw[key];
+-      for (const [key, value] of Object.entries(next)) raw[key] = value;
+-    });
+-    this.config.providers = { ...this.config.providers, [name]: next };
++    this.replaceSource(name, writeEntry(this.providersDir, name, next));
+     this.config.activeProvider = activeProvider;
+     this.config.providerSchemaVersion = 3;
+-    // 端点 .env 的内容按 provider 实例缓存。
+-    this.registry.invalidate(name);
++  }
++
++  /** 写盘后换上名字所在目录展开的端点;同一供应商的模型共用目录,实例一起重建。 */
++  private replaceSource(name: string, next: Record<string, LLMProviderEntry>): void {
++    const source = sourceOf(name);
++    for (const known of Object.keys(this.config.providers)) if (sourceOf(known) === source) this.registry.invalidate(known);
++    this.config.providers = { ...replaceSource(this.config.providers, source, next) };
+   }
+ 
+   save(name: string, entry: LLMProviderEntry, language: Language = 'zh'): void {
+@@ -153,17 +154,14 @@ export class ProviderSettings {
+     const S = text(language);
+     if (!this.config.providers[name]) throw new Error(S.unknownInstance);
+     if (name === this.config.activeProvider) throw new Error(S.deleteActive);
+-    this.registry.invalidate(name);
+-    const { [name]: _dropped, ...rest } = this.config.providers;
+-    this.config.providers = rest;
+-    rmSync(join(this.providersDir, name), { recursive: true, force: true });
++    this.replaceSource(name, removeEntry(this.providersDir, name));
+   }
+ 
+   /** 密钥值优先来自进程环境，其次为端点 .env；未配置变量名时没有来源。 */
+   secretStatus(name: string, entry: LLMProviderEntry): SecretStatus {
+     if (!entry.secret) return 'none';
+     if (process.env[entry.secret]) return 'env';
+-    const file = join(this.providersDir, name, '.env');
++    const file = join(entryDir(this.providersDir, name), '.env');
+     if (!existsSync(file)) return 'none';
+     return new RegExp(`^[ \\t]*${escapeRegExp(entry.secret)}[ \\t]*=[ \\t]*\\S+`, 'm').test(readTextFile(file)) ? 'file' : 'none';
+   }
+@@ -175,7 +173,7 @@ export class ProviderSettings {
+     if (!entry) throw new Error(S.unknownInstance);
+     if (!entry.secret) throw new Error(S.secretNameRequired);
+     if (!value.trim() || /\s/.test(value)) throw new Error(S.secretValueInvalid);
+-    const dir = join(this.providersDir, name);
++    const dir = entryDir(this.providersDir, name);
+     mkdirSync(dir, { recursive: true, mode: 0o700 });
+     const file = join(dir, '.env');
+     const line = `${entry.secret}=${value.trim()}`;
+@@ -198,7 +196,7 @@ export class ProviderSettings {
+ 
+   /** 端点目录里除 `config.json` 外还有什么(密钥、授权状态),删前给操作者看。 */
+   private directoryExtras(name: string): string[] {
+-    const dir = join(this.providersDir, name);
++    const dir = entryDir(this.providersDir, name);
+     if (!existsSync(dir)) return [];
+     return readdirSync(dir).filter((file) => file !== 'config.json');
+   }
+diff --git a/src/providers/webui/strings.de.ts b/src/providers/webui/strings.de.ts
+index dfc9d8b..572c9bc 100644
+--- a/src/providers/webui/strings.de.ts
++++ b/src/providers/webui/strings.de.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Unbekannte Anbieter-Parametergruppe',
+   groupOutOfScope: 'Eine Anbieter-Parametergruppe kann nur ihre eigene Instanz ändern',
+   kindChange: 'Der Modultyp einer bestehenden Instanz kann nicht geändert werden',
++  modelRefFixed: "Hier lassen sich nur die Parameter eines Anbietermodells ändern; Umbenennen oder Austauschen erfolgt in der Modellliste",
+   unknownInstance: 'Unbekannte Anbieter-Instanz',
+   foreignInstance: 'Die Anbieter-Instanz gehört nicht zu diesem Modul',
+   unknownPanel: 'Unbekanntes Anbieter-Panel',
+diff --git a/src/providers/webui/strings.es-419.ts b/src/providers/webui/strings.es-419.ts
+index 04e13ea..9ad0ca8 100644
+--- a/src/providers/webui/strings.es-419.ts
++++ b/src/providers/webui/strings.es-419.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Grupo de parámetros de proveedor desconocido',
+   groupOutOfScope: 'Un grupo de parámetros de proveedor solo puede modificar su propia instancia',
+   kindChange: 'No se puede cambiar el tipo de módulo de una instancia existente',
++  modelRefFixed: "Aquí solo se pueden cambiar los parámetros de un modelo del proveedor; para renombrarlo o reemplazarlo, usa la lista de modelos",
+   unknownInstance: 'Instancia de proveedor desconocida',
+   foreignInstance: 'La instancia de proveedor no pertenece a este módulo',
+   unknownPanel: 'Panel de proveedor desconocido',
+diff --git a/src/providers/webui/strings.fr.ts b/src/providers/webui/strings.fr.ts
+index e825e7d..7a5f830 100644
+--- a/src/providers/webui/strings.fr.ts
++++ b/src/providers/webui/strings.fr.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Groupe de paramètres de fournisseur inconnu',
+   groupOutOfScope: 'Un groupe de paramètres de fournisseur ne peut modifier que sa propre instance',
+   kindChange: "Le type de module d'une instance existante ne peut pas être modifié",
++  modelRefFixed: "Ici, seuls les paramètres d'un modèle de fournisseur sont modifiables ; renommez ou remplacez le modèle depuis la liste des modèles",
+   unknownInstance: 'Instance de fournisseur inconnue',
+   foreignInstance: "L'instance de fournisseur n'appartient pas à ce module",
+   unknownPanel: 'Panneau de fournisseur inconnu',
+diff --git a/src/providers/webui/strings.it.ts b/src/providers/webui/strings.it.ts
+index 47c3aba..894d03a 100644
+--- a/src/providers/webui/strings.it.ts
++++ b/src/providers/webui/strings.it.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Gruppo di parametri del provider sconosciuto',
+   groupOutOfScope: 'Un gruppo di parametri del provider può modificare solo la propria istanza',
+   kindChange: "Il tipo di modulo di un'istanza esistente non può essere cambiato",
++  modelRefFixed: "Qui si possono modificare solo i parametri di un modello del fornitore; per rinominarlo o sostituirlo usa l'elenco dei modelli",
+   unknownInstance: 'Istanza del provider sconosciuta',
+   foreignInstance: "L'istanza del provider non appartiene a questo modulo",
+   unknownPanel: 'Pannello del provider sconosciuto',
+diff --git a/src/providers/webui/strings.ja.ts b/src/providers/webui/strings.ja.ts
+index 680e84b..d2e46c5 100644
+--- a/src/providers/webui/strings.ja.ts
++++ b/src/providers/webui/strings.ja.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: '不明なプロバイダーのパラメーターグループです',
+   groupOutOfScope: 'プロバイダーのパラメーターグループは自身のインスタンスしか変更できません',
+   kindChange: '既存のインスタンスのモジュールの種類は変更できません',
++  modelRefFixed: "プロバイダー配下のモデルはここではパラメーターのみ変更できます。名前の変更やモデルの差し替えはモデル一覧で行ってください",
+   unknownInstance: '不明なプロバイダーインスタンスです',
+   foreignInstance: 'このプロバイダーインスタンスはこのモジュールに属していません',
+   unknownPanel: '不明なプロバイダーパネルです',
+diff --git a/src/providers/webui/strings.ko.ts b/src/providers/webui/strings.ko.ts
+index 86f4df6..0416201 100644
+--- a/src/providers/webui/strings.ko.ts
++++ b/src/providers/webui/strings.ko.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: '알 수 없는 공급자 매개변수 그룹',
+   groupOutOfScope: '공급자 매개변수 그룹은 자신이 속한 인스턴스만 수정할 수 있습니다',
+   kindChange: '기존 인스턴스의 모듈 유형은 바꿀 수 없습니다',
++  modelRefFixed: "공급자 아래의 모델은 여기서 매개변수만 바꿀 수 있습니다. 이름 변경이나 모델 교체는 모델 목록에서 하세요",
+   unknownInstance: '알 수 없는 공급자 인스턴스',
+   foreignInstance: '이 공급자 인스턴스는 이 모듈에 속하지 않습니다',
+   unknownPanel: '알 수 없는 공급자 패널',
+diff --git a/src/providers/webui/strings.pt-BR.ts b/src/providers/webui/strings.pt-BR.ts
+index d471d20..4ed1ef0 100644
+--- a/src/providers/webui/strings.pt-BR.ts
++++ b/src/providers/webui/strings.pt-BR.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Grupo de parâmetros de provedor desconhecido',
+   groupOutOfScope: 'Um grupo de parâmetros de provedor só pode modificar a própria instância',
+   kindChange: 'O tipo de módulo de uma instância existente não pode ser alterado',
++  modelRefFixed: "Aqui só é possível alterar os parâmetros de um modelo do provedor; para renomear ou trocar o modelo, use a lista de modelos",
+   unknownInstance: 'Instância de provedor desconhecida',
+   foreignInstance: 'A instância de provedor não pertence a este módulo',
+   unknownPanel: 'Painel de provedor desconhecido',
+diff --git a/src/providers/webui/strings.ru.ts b/src/providers/webui/strings.ru.ts
+index c8ccb94..36766ac 100644
+--- a/src/providers/webui/strings.ru.ts
++++ b/src/providers/webui/strings.ru.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: 'Неизвестная группа параметров провайдера',
+   groupOutOfScope: 'Группа параметров провайдера может изменять только свой экземпляр',
+   kindChange: 'Тип модуля существующего экземпляра изменить нельзя',
++  modelRefFixed: "Здесь можно менять только параметры модели поставщика; переименовать или заменить модель можно в списке моделей",
+   unknownInstance: 'Неизвестный экземпляр провайдера',
+   foreignInstance: 'Экземпляр провайдера не принадлежит этому модулю',
+   unknownPanel: 'Неизвестная панель провайдера',
+diff --git a/src/providers/webui/strings.ts b/src/providers/webui/strings.ts
+index 1955d3c..9da084b 100644
+--- a/src/providers/webui/strings.ts
++++ b/src/providers/webui/strings.ts
+@@ -34,6 +34,7 @@ const zh = {
+   unknownGroup: '未知 Provider 参数组',
+   groupOutOfScope: 'Provider 参数组只能修改所属实例',
+   kindChange: '不能改变已有实例的模块类型',
++  modelRefFixed: '供应商下的模型在这里只能改参数；改名或换模型请在模型列表里操作',
+   unknownInstance: '未知供应实例',
+   foreignInstance: '供应实例不属于此模块',
+   unknownPanel: '未知 Provider 面板',
+@@ -90,6 +91,7 @@ export const en: typeof zh = {
+   unknownGroup: 'Unknown provider parameter group',
+   groupOutOfScope: 'A provider parameter group can only modify its own instance',
+   kindChange: 'The module type of an existing instance cannot be changed',
++  modelRefFixed: 'Only the parameters of a provider model can be changed here; rename or replace the model in the model list',
+   unknownInstance: 'Unknown provider instance',
+   foreignInstance: 'The provider instance does not belong to this module',
+   unknownPanel: 'Unknown provider panel',
+diff --git a/src/providers/webui/strings.zh-Hant.ts b/src/providers/webui/strings.zh-Hant.ts
+index b1d3e3f..dd7e193 100644
+--- a/src/providers/webui/strings.zh-Hant.ts
++++ b/src/providers/webui/strings.zh-Hant.ts
+@@ -24,6 +24,7 @@ export const text: Partial<typeof en> = {
+   unknownGroup: '未知 Provider 參數群組',
+   groupOutOfScope: 'Provider 參數群組只能修改所屬實例',
+   kindChange: '不能改變既有實例的模組類型',
++  modelRefFixed: "供應商下的模型只能在這裡修改參數；改名或更換模型請在模型清單裡操作",
+   unknownInstance: '未知供應實例',
+   foreignInstance: '供應實例不屬於此模組',
+   unknownPanel: '未知 Provider 面板',
+diff --git a/tests/deploy.test.ts b/tests/deploy.test.ts
+index 7ef4283..8811a14 100644
+--- a/tests/deploy.test.ts
++++ b/tests/deploy.test.ts
+@@ -37,6 +37,23 @@ describe('loadDeployment text decoding', () => {
+   }
+ });
+ 
++describe('loadDeployment provider sources', () => {
++  it('expands a source into model references and follows an active directory name to its only chat model', () => {
++    const dir = mkdtempSync(join(tmpdir(), 'deployment-sources-'));
++    dirs.push(dir);
++    mkdirSync(join(dir, 'providers', 'deepseek'), { recursive: true });
++    writeFileSync(join(dir, 'providers', 'deepseek', 'config.json'), JSON.stringify({
++      kind: 'test', baseUrl: 'https://example.invalid',
++      models: { flash: { spec: { model: 'flash', thinking: false } }, 'bge-m3': { type: 'embedding' } },
++    }));
++    writeFileSync(join(dir, 'config.json'), JSON.stringify({ activeProvider: 'deepseek' }));
++    const { config } = loadDeployment<CoreConfig>({ defaults: () => structuredClone(CORE_DEFAULTS) }, dir);
++    expect(Object.keys(config.providers)).toEqual(['deepseek/flash']);
++    expect(config.providers['deepseek/flash']).toEqual({ kind: 'test', baseUrl: 'https://example.invalid', spec: { model: 'flash', thinking: false } });
++    expect(config.activeProvider).toBe('deepseek/flash');
++  });
++});
++
+ describe('createDeployment', () => {
+   it('avatarFrom 复制成部署的头像;不给就没有头像', () => {
+     const root = mkdtempSync(join(tmpdir(), 'deployment-avatar-'));
+diff --git a/tests/providers/hub.test.ts b/tests/providers/hub.test.ts
+index d480727..60d9f9b 100644
+--- a/tests/providers/hub.test.ts
++++ b/tests/providers/hub.test.ts
+@@ -177,3 +177,53 @@ it('module list carries the editor sections of each module in its declared order
+     expect(module.sections.map(section => section.defaultOpen)).toEqual(declared.map(panel => panel.defaultOpen));
+   }
+ });
++
++function withSource() {
++  const context = fixture();
++  const dir = join(context.root, 'deepseek'); mkdirSync(dir);
++  writeFileSync(join(dir, 'config.json'), JSON.stringify({
++    kind: entry.kind, baseUrl: entry.baseUrl, secret: 'CORTICO_KEY_DEEPSEEK',
++    models: {
++      flash: { type: 'chat', spec: { model: 'flash', thinking: false } },
++      pro: { type: 'chat', spec: { model: 'pro', thinking: false } },
++      'bge-m3': { type: 'embedding' },
++    },
++  }));
++  writeFileSync(join(dir, '.env'), 'CORTICO_KEY_DEEPSEEK=shared-key\n');
++  writeFileSync(context.file, JSON.stringify({ activeProvider: 'deepseek/flash' }));
++  return { ...context, dir, source: () => JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) };
++}
++it('lists the chat models of a source as ready connections sharing its key', () => {
++  const { hub } = withSource();
++  const listed = hub.list('en');
++  expect(listed.active).toBe('deepseek/flash');
++  expect(listed.providers.map(p => [p.name, p.model, p.readiness.state])).toEqual([['deepseek/flash', 'flash', 'ready'], ['deepseek/pro', 'pro', 'ready']]);
++});
++it('saves a source model in place and keeps its siblings', () => {
++  const { hub, source } = withSource();
++  const saved = hub.detail('deepseek/flash', 'en');
++  hub.save('deepseek/flash', { ...saved, expectedRevision: saved.revision, entry: { ...saved.entry, spec: { model: 'flash', thinking: false, temperature: 0.3 } } }, 'en');
++  expect(source().models.flash.spec.temperature).toBe(0.3);
++  expect(source().models.pro).toEqual({ type: 'chat', spec: { model: 'pro', thinking: false } });
++  expect(source().models['bge-m3']).toEqual({ type: 'embedding' });
++  const fresh = hub.detail('deepseek/flash', 'en');
++  expect(() => hub.save('deepseek/flash', { ...fresh, name: 'Renamed', expectedRevision: fresh.revision }, 'en')).toThrow('Only the parameters');
++  expect(() => hub.save('deepseek/flash', { ...fresh, expectedRevision: fresh.revision, entry: { ...fresh.entry, spec: { model: 'other', thinking: false } } }, 'en')).toThrow('Only the parameters');
++});
++it('activates and deletes one model while the source and its key remain', () => {
++  const { hub, cfg, file, dir, source } = withSource();
++  expect(() => hub.delete('deepseek/flash', hub.detail('deepseek/flash', 'en').revision)).toThrow();
++  hub.activate('deepseek/pro', 'en');
++  expect(JSON.parse(readFileSync(file, 'utf8')).activeProvider).toBe('deepseek/pro');
++  hub.delete('deepseek/flash', hub.detail('deepseek/flash', 'en').revision);
++  expect(Object.keys(source().models)).toEqual(['pro', 'bge-m3']);
++  expect(Object.keys(cfg.providers)).toEqual(['deepseek/pro']);
++  expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('shared-key');
++});
++it('writes a key typed for a source model into the source .env', () => {
++  const { hub, settings, dir } = withSource();
++  hub.list('en');
++  expect(settings.setSecret('deepseek/pro', 'rotated', 'en')).toBe('file');
++  expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('CORTICO_KEY_DEEPSEEK=rotated');
++  expect(settings.secretStatus('deepseek/flash', hub.detail('deepseek/flash', 'en').entry)).toBe('file');
++});
+diff --git a/tests/providers/registry.test.ts b/tests/providers/registry.test.ts
+index a989da5..220c79e 100644
+--- a/tests/providers/registry.test.ts
++++ b/tests/providers/registry.test.ts
+@@ -48,3 +48,17 @@ it('keeps the cached instance while the .env content is unchanged', () => {
+   expect(registry.resolve('Alpha')).toBe(first);
+   expect(seenKeys).toHaveLength(1);
+ });
++
++it('gives every model of a source the source directory and its key', () => {
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const root = join(temp.dir, 'providers'); mkdirSync(join(root, 'Beta'), { recursive: true });
++  writeFileSync(join(root, 'Beta', '.env'), 'CORTICO_KEY_BETA=shared\n');
++  const seenDirs: string[] = [];
++  const shared = { kind: 'stub', baseUrl: 'https://model.test', secret: 'CORTICO_KEY_BETA' };
++  const cfg = makeCfg({ providers: { 'Beta/one': { ...shared, spec: { model: 'one', thinking: false } }, 'Beta/org/two': { ...shared, spec: { model: 'org/two', thinking: false } } }, activeProvider: 'Beta/one' });
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() },
++    [{ ...stub, create: (name, entry, host) => { seenDirs.push(host.stateDir); return stub.create(name, entry, host); } }]);
++  registry.resolve('Beta/one'); registry.resolve('Beta/org/two');
++  expect(seenKeys).toEqual(['shared', 'shared']);
++  expect(seenDirs).toEqual([join(root, 'Beta'), join(root, 'Beta')]);
++});
+diff --git a/tests/providers/store.test.ts b/tests/providers/store.test.ts
+new file mode 100644
+index 0000000..372ae6d
+--- /dev/null
++++ b/tests/providers/store.test.ts
+@@ -0,0 +1,76 @@
++/** 供应商目录的两种格式展开成同一张端点表;写回只动名字所在目录里属于它的部分。 */
++import { afterEach, expect, it } from 'vitest';
++import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { makeTmpDir } from '../core/helpers.ts';
++import { canonicalName, readProviders, removeEntry, writeEntry } from '../../src/providers/store.ts';
++
++const cleanups: Array<() => void> = [];
++afterEach(() => cleanups.splice(0).forEach(fn => fn()));
++
++const legacy = { kind: 'openai-responses-compat', baseUrl: 'https://legacy.test', spec: { model: 'legacy-model', thinking: false } };
++const source = {
++  kind: 'openai-responses-compat', baseUrl: 'https://source.test', secret: 'CORTICO_KEY_DEEPSEEK', options: { reasoningReplay: 'plaintext' },
++  models: {
++    'flash': { type: 'chat', spec: { model: 'flash', thinking: true, temperature: 0.65 }, multimodal: true },
++    'pro': { spec: { model: '', thinking: false } },
++    'off': { type: 'chat', enabled: false, spec: { model: 'off', thinking: false } },
++    'org/gpt-6.1': { type: 'chat', spec: { model: 'org/gpt-6.1', thinking: false } },
++    'bge-m3': { type: 'embedding' },
++  },
++};
++
++function fixture() {
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const root = join(temp.dir, 'providers');
++  for (const [name, config] of [['old', legacy], ['deepseek', source], ['.transaction-x', legacy]] as const) {
++    mkdirSync(join(root, name), { recursive: true });
++    writeFileSync(join(root, name, 'config.json'), JSON.stringify(config));
++  }
++  writeFileSync(join(root, 'deepseek', '.env'), 'CORTICO_KEY_DEEPSEEK=key\n');
++  return root;
++}
++const onDisk = (root: string) => JSON.parse(readFileSync(join(root, 'deepseek', 'config.json'), 'utf8'));
++
++it('lists legacy endpoints by directory and enabled chat models by reference', () => {
++  const table = readProviders(fixture());
++  expect(Object.keys(table).sort()).toEqual(['deepseek/flash', 'deepseek/org/gpt-6.1', 'deepseek/pro', 'old']);
++  expect(table.old).toEqual(legacy);
++  expect(table['deepseek/flash']).toEqual({
++    kind: 'openai-responses-compat', baseUrl: 'https://source.test', secret: 'CORTICO_KEY_DEEPSEEK', options: { reasoningReplay: 'plaintext' },
++    spec: { model: 'flash', thinking: true, temperature: 0.65 }, multimodal: true,
++  });
++  expect(table['deepseek/pro'].spec?.model).toBe('pro');
++});
++
++it('maps a directory name onto its only enabled chat model and leaves other names alone', () => {
++  const table = readProviders(fixture());
++  expect(canonicalName('old', table)).toBe('old');
++  expect(canonicalName('deepseek', table)).toBe('deepseek');
++  expect(canonicalName('deepseek', { 'deepseek/flash': table['deepseek/flash'] })).toBe('deepseek/flash');
++  expect(canonicalName('missing', table)).toBe('missing');
++});
++
++it('writes shared fields to the source and model fields to that model only', () => {
++  const root = fixture();
++  const current = readProviders(root)['deepseek/flash'];
++  const next = writeEntry(root, 'deepseek/flash', { ...current, baseUrl: 'https://moved.test', spec: { ...current.spec!, temperature: 1 } });
++  const saved = onDisk(root);
++  expect(saved.baseUrl).toBe('https://moved.test');
++  expect(saved.models.flash).toEqual({ type: 'chat', spec: { model: 'flash', thinking: true, temperature: 1 }, multimodal: true });
++  expect(saved.models['bge-m3']).toEqual({ type: 'embedding' });
++  expect(saved.models.off.enabled).toBe(false);
++  expect(next['deepseek/pro'].baseUrl).toBe('https://moved.test');
++  expect(() => writeEntry(root, 'deepseek/flash', { ...current, spec: { ...current.spec!, model: 'other' } })).toThrow('spec.model');
++  expect(() => writeEntry(root, 'absent/flash', current)).toThrow('absent');
++});
++
++it('removes one model and keeps the source with its key', () => {
++  const root = fixture();
++  const next = removeEntry(root, 'deepseek/flash');
++  expect(Object.keys(next).sort()).toEqual(['deepseek/org/gpt-6.1', 'deepseek/pro']);
++  expect(onDisk(root).models.flash).toBeUndefined();
++  expect(existsSync(join(root, 'deepseek', '.env'))).toBe(true);
++  removeEntry(root, 'old');
++  expect(existsSync(join(root, 'old'))).toBe(false);
++});
