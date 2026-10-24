@@ -1,13 +1,15 @@
 import type { MemesConfigSection } from '../config.ts';
 import { hash, MemeLibrary } from './library.ts';
 import { MemeSearch } from './search.ts';
-import { CAPTION_PROMPT, generateHttp, type Generate, type ModelOptions } from './models.ts';
+import type { ModelHub } from 'cortico/providers/model-hub.ts';
+import type { WorldHost } from 'cortico/core/types.ts';
+import { CAPTION_PROMPT, generateCaption } from './models.ts';
 
 export interface Progress { stage: string; done: number; total: number; failed: number; skipped: number; errors: Array<{ id: string; error: string }> }
 export class MemeSemantic {
   constructor(private library: MemeLibrary, private search: MemeSearch,
-    private config: () => MemesConfigSection['memes'], private model: () => ModelOptions,
-    private generate: Generate = generateHttp) {}
+    private config: () => MemesConfigSection['memes'], private models: ModelHub,
+    private reportUsage: WorldHost['reportUsage']) {}
 
   async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal) {
     const packs = await this.library.packs();
@@ -20,9 +22,10 @@ export class MemeSemantic {
       const id = `${pack.id}:${image.id}`;
       try {
         const { bytes } = await this.library.image(id);
-        const result = await this.generate({ instruction: CAPTION_PROMPT,
+        const cfg = this.config();
+        const result = await generateCaption(this.models, { instruction: CAPTION_PROMPT,
           data: { category: image.category, category_description: image.categoryDescription, animated: image.mime === 'image/gif', note: image.mime === 'image/gif' ? 'GIF 可能仅识别首帧，请勿推断未见动作' : '' },
-          image: { bytes, mime: image.mime } }, this.model(), signal);
+          image: { bytes, mime: image.mime } }, { model: cfg.captionModel, timeoutSeconds: cfg.timeoutSeconds }, this.reportUsage, signal);
         if (typeof result.caption !== 'string' || !result.caption.trim() || result.caption.length > 8000 || !Array.isArray(result.tags) || result.tags.length > 100 || result.tags.some(t => typeof t !== 'string' || t.length > 200) || typeof result.visible_text !== 'string' || result.visible_text.length > 4000 || typeof result.needs_review !== 'boolean') throw new Error('视觉模型返回的语义字段无效');
         signal.throwIfAborted();
         const saved = await this.library.applySemantic(id, hash(JSON.stringify(image)), { caption: result.caption.trim(),

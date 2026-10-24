@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { assembleBot } from '../../../vendor/cortico/bots/corti-soulmate/assemble.ts';
 import { MockOneBot } from '../../../vendor/cortico/tests/helpers/mock-onebot.ts';
 import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, textReply, toolReply } from '../../../vendor/cortico/tests/core/helpers.ts';
-import { archive, world, PNG } from './helpers.ts';
+import { archive, world, PNG, FakeModelHub } from './helpers.ts';
 
 it('retrieved meme traverses the real session blob store and QQ draft/confirm over a local OneBot socket', async () => {
   const tmp = makeTmpDir();
@@ -20,7 +20,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
   const llm = new FakeLLM();
   const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm });
   let auxiliaryCalls = 0;
-  const { instance, cfg: memeCfg } = world(tmp.dir, undefined, async () => { auxiliaryCalls++; throw new Error('Unexpected auxiliary request'); });
+  const { instance, cfg: memeCfg } = world(tmp.dir, new FakeModelHub(async () => { auxiliaryCalls++; throw new Error('Unexpected auxiliary request'); }));
   memeCfg.memes.minScore = -1;
   try {
     await instance.library.importZip(await archive(tmp.dir), 'python'); await instance.search.build();

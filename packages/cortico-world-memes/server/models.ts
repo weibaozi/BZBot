@@ -1,25 +1,25 @@
-export interface ModelOptions { url: string; model: string; key: string; timeoutSeconds: number }
-export interface ModelInput { instruction: string; data: unknown; image?: { bytes: Buffer; mime: string } }
-export type Generate = (input: ModelInput, options: ModelOptions, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+import type { WorldHost } from 'cortico/core/types.ts';
+import { generationUsage, outputText, type ModelHub } from 'cortico/providers/model-hub.ts';
+import { message, record } from 'cortico/protocol/open-responses/context.ts';
 
-export const generateHttp: Generate = async (input, options, signal) => {
-  if (!options.url || !options.model) throw new Error('请先在设置中心配置视觉模型的地址和名称');
-  const url = new URL(options.url.replace(/\/$/, '') + '/chat/completions');
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid model URL');
-  const response = await fetch(url, { method: 'POST', redirect: 'error',
-    signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(options.timeoutSeconds * 1000)]),
-    headers: { 'Content-Type': 'application/json', ...(options.key ? { Authorization: `Bearer ${options.key}` } : {}) },
-    body: JSON.stringify({ model: options.model, stream: false, max_tokens: 1024,
-      messages: [{ role: 'system', content: input.instruction }, { role: 'user', content: input.image ? [
-        { type: 'text', text: JSON.stringify(input.data) },
-        { type: 'image_url', image_url: { url: `data:${input.image.mime};base64,${input.image.bytes.toString('base64')}` } },
-      ] : JSON.stringify(input.data) }] }),
-  });
-  if (!response.ok) throw new Error(`Model request failed (HTTP ${response.status})`);
-  const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const text = body.choices?.[0]?.message?.content;
-  return parseModelJson(text);
-};
+export interface ModelInput { instruction: string; data: unknown; image: { bytes: Buffer; mime: string } }
+
+export async function generateCaption(models: ModelHub, input: ModelInput,
+  options: { model: string; timeoutSeconds: number }, reportUsage: WorldHost['reportUsage'], signal?: AbortSignal) {
+  if (!options.model) throw new Error('先在模型中心配置能看图的对话模型，再在表情包设置里选它');
+  const generation = await models.chat(options.model, [
+    message('system', input.instruction),
+    record({ type: 'message', role: 'user', content: [
+      { type: 'input_text', text: JSON.stringify(input.data) },
+      { type: 'input_image', image_url: `data:${input.image.mime};base64,${input.image.bytes.toString('base64')}`, detail: 'auto' },
+    ] }),
+  ], { overrides: { thinking: false, maxTokens: 1024 }, role: 'memes',
+    signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(options.timeoutSeconds * 1000)]) });
+  const usage = generationUsage(generation);
+  if (usage) reportUsage(usage.usage, usage.opts);
+  if (generation.response.status !== 'completed') throw new Error('视觉模型响应未完成，请重试');
+  return parseModelJson(outputText(generation));
+}
 
 export function parseModelJson(text: unknown): Record<string, unknown> {
   if (typeof text !== 'string' || text.length > 32000) throw new Error('Invalid model response');

@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archive, embed, PNG, world } from './helpers.ts';
+import { archive, FakeModelHub, PNG, world } from './helpers.ts';
 import { MemeSearch } from '../server/search.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 const dirs: string[] = [];
@@ -33,20 +33,36 @@ it('rejects descriptions attached to image bytes with a mismatched hash', async 
   await expect(instance.library.importZip(await archive(dir, { 'semantic_metadata.json': metadata }), 'python')).rejects.toThrow('hash differs');
 });
 it('retrieves intended meaning and reuses query vectors; the index survives reopening', async () => {
-  const { instance, cfg } = await setup();
+  const { instance, cfg, models } = await setup();
   await instance.search.build();
   const first = await instance.search.search('抱抱安慰', 1);
   expect(first.candidates[0].category).toBe('affection');
   expect(first.queryCached).toBe(false);
   expect((await instance.search.search('抱抱安慰', 1)).queryCached).toBe(true);
-  const reopened = new MemeSearch(instance.library, () => ({ url: cfg.memes.embeddingUrl, model: cfg.memes.embeddingModel, queryPrefix: '', key: '' }), embed);
+  const reopened = new MemeSearch(instance.library, () => ({ model: cfg.memes.embeddingModel, queryPrefix: '' }), models);
   expect((await reopened.search('开心', 1)).candidates[0].category).toBe('happy');
-  cfg.memes.embeddingModel = 'another-model';
-  await expect(instance.search.search('抱抱', 1)).rejects.toThrow('model settings changed');
+});
+it('requires a model-center embedding selection before searching or building', async () => {
+  const { instance, cfg } = await setup(); cfg.memes.embeddingModel = '';
+  await expect(instance.semantic.recall({ keywords: ['抱抱'] })).rejects.toThrow('先在模型中心配置嵌入模型，再在表情包设置里选它');
+  await expect(instance.search.build()).rejects.toThrow('先在模型中心配置嵌入模型，再在表情包设置里选它');
+});
+it('changing the model reference or query prefix invalidates the persisted index until rebuilding', async () => {
+  const { instance, cfg, models } = await setup(); await instance.search.build();
+  await instance.search.search('抱抱', 1);
+  for (const change of [() => { cfg.memes.embeddingModel = 'fixture/other-embedding'; }, () => { cfg.memes.queryPrefix = 'query: '; }]) {
+    change();
+    const reopened = new MemeSearch(instance.library, () => ({ model: cfg.memes.embeddingModel, queryPrefix: cfg.memes.queryPrefix }), models);
+    expect(await reopened.state()).toMatchObject({ compatible: false, valid: 0, pending: 2 });
+    await expect(reopened.search('抱抱', 1)).rejects.toThrow('model settings changed');
+    expect(await reopened.build()).toMatchObject({ generated: 2 });
+    expect(await reopened.search('抱抱', 1)).toMatchObject({ queryCached: false, candidates: [{ category: 'affection', score: 1 }] });
+  }
 });
 it('a failed rebuild preserves the previous complete index', async () => {
   const { instance, cfg } = await setup(); await instance.search.build();
-  const failing = new MemeSearch(instance.library, () => ({ url: cfg.memes.embeddingUrl, model: cfg.memes.embeddingModel, queryPrefix: '', key: '' }), async () => { throw new Error('service offline'); });
+  const models = new FakeModelHub(); models.embed = async () => { throw new Error('service offline'); };
+  const failing = new MemeSearch(instance.library, () => ({ model: cfg.memes.embeddingModel, queryPrefix: '' }), models);
   await expect(failing.build()).rejects.toThrow('service offline');
   expect((await instance.search.search('开心', 1)).candidates).toHaveLength(1);
 });

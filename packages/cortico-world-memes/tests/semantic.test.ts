@@ -2,12 +2,11 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archive, PNG, world } from './helpers.ts';
-import type { Generate } from '../server/models.ts';
+import { archive, PNG, world, FakeModelHub } from './helpers.ts';
 import type { Progress } from '../server/semantic.ts';
 const dirs: string[] = [];
-async function setup(generate: Generate) {
-  const dir = await mkdtemp(join(tmpdir(), 'meme-semantic-')); dirs.push(dir); const state = world(dir, undefined, generate);
+async function setup(models = new FakeModelHub()) {
+  const dir = await mkdtemp(join(tmpdir(), 'meme-semantic-')); dirs.push(dir); const state = world(dir, models);
   const imported = await state.instance.library.importZip(await archive(dir), 'python');
   const edit = async (change: Record<string, unknown>) => { const p = (await state.instance.library.catalog())[0]; return state.instance.library.edit({ ...change, packId: p.id, revision: p.revision }); };
   return { ...state, dir, packId: imported.id, edit };
@@ -16,7 +15,7 @@ const progress = (): Progress => ({ stage: '', done: 0, total: 0, failed: 0, ski
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 it('recall returns ranked candidates without any generation call and reuses query embeddings', async () => {
   let generations = 0;
-  const { instance, cfg } = await setup(async () => { generations++; throw new Error('Retrieval must not call a model'); });
+  const { instance, cfg } = await setup(new FakeModelHub(async () => { generations++; throw new Error('Retrieval must not call a model'); }));
   cfg.memes.minScore = -1; await instance.search.build();
   const result = await instance.semantic.recall({ keywords: ['抱抱', '安慰', '抱抱'] });
   expect(result).toMatchObject({ query: '抱抱 安慰', reason: 'candidates', sent: false, queryCached: false });
@@ -27,7 +26,7 @@ it('recall returns ranked candidates without any generation call and reuses quer
   expect(generations).toBe(0);
 });
 it('gates and empty candidates return facts without making a final selection', async () => {
-  const { instance, cfg } = await setup(async () => { throw new Error('Unexpected generation'); });
+  const { instance, cfg } = await setup();
   cfg.memes.maxMemes = 0;
   expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toMatchObject({ candidates: [], reason: 'disabled' });
   cfg.memes.maxMemes = 1;
@@ -39,7 +38,7 @@ it('gates and empty candidates return facts without making a final selection', a
   expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toMatchObject({ candidates: [], reason: 'no_candidates', sent: false });
 });
 it('validates keyword boundaries and respects cancellation before retrieval', async () => {
-  const { instance } = await setup(async () => { throw new Error('Unexpected generation'); });
+  const { instance } = await setup();
   for (const keywords of [undefined, [], [' '], ['x'.repeat(201)], Array(9).fill('x'), [12]]) {
     await expect(instance.semantic.recall({ keywords })).rejects.toThrow('keywords');
   }
@@ -48,10 +47,10 @@ it('validates keyword boundaries and respects cancellation before retrieval', as
 });
 it('caption jobs resume missing images, retain manual work, and persist failures for targeted retry', async () => {
   let fail = true;
-  const { instance, edit, packId } = await setup(async input => {
-    expect(input.image?.bytes).toEqual(PNG); if (fail) throw new Error('service unavailable');
+  const { instance, edit, packId } = await setup(new FakeModelHub(async context => {
+    expect(JSON.stringify(context)).toContain(`data:image/png;base64,${PNG.toString('base64')}`); if (fail) throw new Error('service unavailable');
     return { caption: '新图片的含义', tags: ['温柔'], visible_text: '', needs_review: false };
-  });
+  }));
   const entry = (await instance.library.entries())[0];
   await edit({ kind: 'image', id: entry.id, category: entry.category, caption: '人工保留', visibleText: '', tags: [] });
   await edit({ kind: 'createCategory', category: 'new', description: '新图片' });
@@ -67,7 +66,7 @@ it('caption jobs resume missing images, retain manual work, and persist failures
 });
 it('a human edit while the vision request is in flight wins over the stale result', async () => {
   let editDuring: () => Promise<void> = async () => {};
-  const { instance, edit, packId } = await setup(async () => { await editDuring(); return { caption: '自动覆盖', tags: [], visible_text: '', needs_review: false }; });
+  const { instance, edit, packId } = await setup(new FakeModelHub(async () => { await editDuring(); return { caption: '自动覆盖', tags: [], visible_text: '', needs_review: false }; }));
   const first = (await instance.library.entries())[0];
   editDuring = async () => { await edit({ kind: 'image', id: first.id, category: first.category, caption: '人工胜出', tags: [], visibleText: '' }); };
   const p = progress(); await instance.semantic.describe(packId, 'force', p, new AbortController().signal);
@@ -75,7 +74,7 @@ it('a human edit while the vision request is in flight wins over the stale resul
 });
 it('cancelling a caption job preserves completed descriptions and does not persist cancellation as failure', async () => {
   const abort = new AbortController(); let calls = 0;
-  const { instance, packId } = await setup(async () => { if (++calls === 2) abort.abort(); return { caption: '已完成', tags: [], visible_text: '', needs_review: false }; });
+  const { instance, packId } = await setup(new FakeModelHub(async () => { if (++calls === 2) abort.abort(); return { caption: '已完成', tags: [], visible_text: '', needs_review: false }; }));
   await expect(instance.semantic.describe(packId, 'force', progress(), abort.signal)).rejects.toThrow();
   const entries = await instance.library.entries(); expect(entries.filter(e => e.caption === '已完成')).toHaveLength(1);
   expect(entries.every(e => !e.semanticError)).toBe(true);

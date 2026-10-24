@@ -3,22 +3,10 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { hash, MemeLibrary, semanticText } from './library.ts';
 
-export interface EmbeddingOptions { url: string; model: string; queryPrefix: string; key: string }
-export type Embed = (texts: string[], options: EmbeddingOptions, signal?: AbortSignal) => Promise<number[][]>;
-export const embedHttp: Embed = async (texts, options, signal) => {
-  const url = new URL(options.url.replace(/\/$/, '') + '/embeddings');
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid embedding URL');
-  const response = await fetch(url, {
-    method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
-    headers: { 'Content-Type': 'application/json', ...(options.key ? { Authorization: `Bearer ${options.key}` } : {}) },
-    body: JSON.stringify({ model: options.model, input: texts, encoding_format: 'float' }),
-  });
-  if (!response.ok) throw new Error(`Embedding request failed (HTTP ${response.status})`);
-  const body = await response.json() as { data?: Array<{ index: number; embedding: number[] }> };
-  const data = body.data?.slice().sort((a, b) => a.index - b.index);
-  if (!data || data.length !== texts.length || data.some((d, i) => d.index !== i)) throw new Error('Invalid embedding response');
-  return data.map(d => normalize(d.embedding));
-};
+import type { ModelHub } from 'cortico/providers/model-hub.ts';
+
+export interface EmbeddingOptions { model: string; queryPrefix: string }
+const MODEL_REQUIRED = '先在模型中心配置嵌入模型，再在表情包设置里选它';
 export function normalize(vector: number[]): number[] {
   if (!Array.isArray(vector) || !vector.length || vector.length > 32768 || vector.some(n => typeof n !== 'number' || !Number.isFinite(n)))
     throw new Error('Invalid embedding vector');
@@ -33,11 +21,11 @@ interface Index {
 export class MemeSearch {
   private index?: Index;
   private queries = new Map<string, number[]>();
-  constructor(private library: MemeLibrary, private options: () => EmbeddingOptions, private embed: Embed = embedHttp) {}
-  private fingerprint(options: EmbeddingOptions) { return hash(JSON.stringify([options.url.replace(/\/$/, ''), options.model, options.queryPrefix])); }
+  constructor(private library: MemeLibrary, private options: () => EmbeddingOptions, private models: ModelHub) {}
+  private fingerprint(options: EmbeddingOptions) { return hash(JSON.stringify([options.model, options.queryPrefix])); }
   async build(signal?: AbortSignal, settings: { force?: boolean; packId?: string; progress?: (done: number, total: number) => void } = { force: true }): Promise<{ indexed: number; missingDescriptions: number; generated: number }> {
     const options = this.options();
-    if (!options.url || !options.model) throw new Error('Configure the embedding URL and model first');
+    if (!options.model) throw new Error(MODEL_REQUIRED);
     const entries = await this.library.entries();
     const eligible = entries.filter(e => e.searchable);
     if (!eligible.length) throw new Error('No images with usable semantic descriptions; import a semantic export');
@@ -55,7 +43,7 @@ export class MemeSearch {
     for (let offset = 0; offset < pending.length; offset += 16) {
       signal?.throwIfAborted();
       const batch = pending.slice(offset, offset + 16);
-      const vectors = await this.embed(batch.map(semanticText), options, signal);
+      const vectors = await this.models.embed(options.model, batch.map(semanticText), signal);
       if (vectors.length !== batch.length) throw new Error('Embedding batch count mismatch');
       for (let i = 0; i < batch.length; i++) {
         const vector = normalize(vectors[i]);
@@ -80,18 +68,19 @@ export class MemeSearch {
   }
   async search(query: string, topK: number, signal?: AbortSignal) {
     if (!query.trim() || query.length > 2000) throw new Error('Query must contain 1–2000 characters');
+    const options = this.options();
+    if (!options.model) throw new Error(MODEL_REQUIRED);
     const start = performance.now();
     const state = await this.state();
     if (!state.indexed || !state.compatible || this.index?.version !== 1) throw new Error('Semantic index unavailable or model settings changed; build the index in meme management');
     const index = this.index!;
     const enabled = new Set((await this.library.packs()).filter(p => p.enabled !== false).map(p => p.id));
     const entries = new Map((await this.library.entries()).filter(e => e.searchable && enabled.has(e.packId)).map(e => [e.id, e]));
-    const options = this.options();
     const key = hash(index.fingerprint + '\n' + query.trim());
     const cached = this.queries.has(key);
     let vector = this.queries.get(key);
     if (!vector) {
-      const vectors = await this.embed([options.queryPrefix + query.trim()], options, signal);
+      const vectors = await this.models.embed(options.model, [options.queryPrefix + query.trim()], signal);
       vector = normalize(vectors[0]);
       if (vector.length !== index.dimension) throw new Error('Query embedding dimension differs from index');
       this.queries.set(key, vector);

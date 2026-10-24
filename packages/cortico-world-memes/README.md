@@ -25,7 +25,7 @@
 
 ## 设置中心与运行
 
-模式页提供配图开关、每次配图上限 0/1、全局视觉模型与 embedding 选择、候选数、最低相似度、视觉超时和导入程序设置。字段来自同一份 ConfigGroup，保存走 Cortico 配置校验与热更新。仅自定义端点的密钥分别存入部署 `.env` 的 `CORTICO_MEME_VISION_KEY`、`CORTICO_MEME_EMBEDDING_KEY`；界面只返回是否配置，不回显密钥。
+模式页提供配图开关、每次配图上限 0/1、语义检索、视觉标注和导入程序设置。语义检索包括嵌入模型、查询前缀、候选数、最低相似度；视觉标注包括能看图的对话模型和调用超时。字段来自同一份 ConfigGroup，保存走 Cortico 配置校验与热更新。模型地址、密钥或登录授权统一在模型中心配置。
 
 `ENV_PROMPT.md` 是可编辑的表情使用预设模板：主模型在准备回复时结合当前 session 中的人设、对话与收件人偏好，决定是否配图；配图频率（约每 5 条回复 1 张）写在模板里，由主模型把握，代码不做随机拦截。要配图时调用 `search_meme({keywords: ["安慰对方", "温柔抱抱", "陪伴"]})`，给出 1–8 个短词或短语。工具只进行一次查询 embedding 和向量召回，按候选数与最低相似度返回 id、描述、标签、配字和相似度；不调用辅助模型，不做最终选择。功能关闭或没有候选时返回原因。
 
@@ -33,17 +33,21 @@
 
 选中后 `get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0001-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
 
-全局模型下拉框从共享供应商目录读取已保存的端点与模型，选择只保存端点名。视觉标注通过 Cortico 的 ProviderRegistry 复用供应商协议、模型参数、API Key 或已有登录凭据；图片输入需要在该供应商中启用。生成用量计入表情 World。全局 embedding 复用端点地址、模型名和密钥调用 `/embeddings`，需要端点实际支持 embedding；ChatGPT 等登录供应商不能直接充当 embedding。选择失效时报告错误，不静默切回其他模型。
+`embeddingModel`、`captionModel` 保存模型中心的模型引用，默认均为空。下拉选项分别由框架的 `x-options: models:embedding`、`models:chat:image` 提供；选项按模型类型和图片能力过滤。插件调用 `ctx.models.embed`、`ctx.models.chat`，模型中心负责协议和凭据。选择失效时报告错误，不静默切回其他模型。
 
-选择“自定义端点”时仍可单独填写地址与模型：视觉标注使用 OpenAI 兼容 `/chat/completions`，温度沿用服务默认值；embedding 使用 `/embeddings`。查询向量缓存最多 128 条；bge-small-zh 的查询前缀须与服务器预处理约定一致。模型地址、名称或查询前缀改变后需建立匹配索引。管理页测试和会话工具使用同一召回方法，显示候选与 embedding/search 耗时，不执行主模型选图、不发送消息。
+视觉标注通过 `input_image` 传入图片 data URL，单次调用关闭思考、最大输出设为 1024，其余参数沿用所选模型。用量通过 `generationUsage` 转换后交给 World 宿主记账，JSON 解析失败的生成也计入用量。查询向量缓存最多 128 条；查询前缀须与模型服务的预处理约定一致。索引指纹由模型引用和查询前缀决定，任一变化都需要重建。管理页测试和会话工具使用同一召回方法，显示候选与 embedding/search 耗时，不执行主模型选图、不发送消息。
 
 ### 本机 BGE-M3
 
-已安装 Ollama 的机器可运行 `ollama pull bge-m3`，模型地址为 `http://127.0.0.1:11434/v1`，模型名 `bge-m3`，查询前缀留空。将这个端点保存到全局模型列表后，在表情设置的“全局 Embedding 模型”选择它，再生成向量。BGE-M3 输出 1024 维；原有其他模型的向量需要重建。保持 Ollama 服务运行，查询会复用已加载模型及最多 128 条查询向量缓存。
+已安装 Ollama 的机器可运行 `ollama pull bge-m3`。在模型中心建立供应商 `local`，地址为 `http://127.0.0.1:11434/v1`，添加类型为「嵌入」的 `bge-m3` 模型；在表情设置中选择引用 `local/bge-m3`，查询前缀留空，再生成向量。BGE-M3 输出 1024 维；原有其他模型的向量需要重建。保持 Ollama 服务运行，查询会复用已加载模型及最多 128 条查询向量缓存。
+
+### 升级到模型中心版 0.6.0
+
+在模型中心建好嵌入模型和能看图的对话模型，在表情包设置里选上，然后执行「重建全部向量」。图片、分类、语义标签与人工编辑保留。旧的端点选择、地址、视觉模型名称及插件密钥配置不再使用；旧索引的指纹与新版不兼容。
 
 ### 从 0.3.x 升级
 
-重启扩展以加载新工具声明；`qqextras_choose_meme(reply, context?, persona?)` 替换为 `search_meme(keywords)`。已保存的 `auxiliaryUrl`、`auxiliaryModel`、`contextTurns`、`injectPersona` 及辅助模型密钥不再使用，可自行清理；图片、语义和向量索引继续复用。`timeoutSeconds` 现在只控制视觉标注。若部署已有 `prompts/MEMES.md` 自定义覆盖，将其中的旧选图流程更新为本包 `ENV_PROMPT.md` 的关键词召回流程，保留自定义配图偏好。
+重启扩展以加载新工具声明；`qqextras_choose_meme(reply, context?, persona?)` 替换为 `search_meme(keywords)`。已保存的 `auxiliaryUrl`、`auxiliaryModel`、`contextTurns`、`injectPersona` 及辅助模型密钥不再使用，可自行清理；图片和语义继续复用，向量按 0.6.0 升级说明重建。`timeoutSeconds` 现在只控制视觉标注。若部署已有 `prompts/MEMES.md` 自定义覆盖，将其中的旧选图流程更新为本包 `ENV_PROMPT.md` 的关键词召回流程，保留自定义配图偏好。
 
 ### 从 qqextras 改名
 
@@ -53,6 +57,6 @@
 
 ## 验证与来源
 
-`pnpm test` 使用临时目录、真实 ZIP、本机 HTTP/OneBot 服务和真实事件库，只有 LLM/embedding 使用脚本响应。`pnpm run typecheck`、`pnpm run typecheck:web` 检查类型。`pnpm run build:web` 在 bot 停止后构建面板。
+`pnpm test` 使用临时目录、真实 ZIP、本机 OneBot 服务和真实事件库，只有 ModelHub 的 LLM/embedding 使用脚本响应。视觉标注用量通过真实 World 宿主写入用量日志。`pnpm run typecheck`、`pnpm run typecheck:web` 检查类型。`pnpm run build:web` 在 bot 停止后构建面板。
 
 界面样式、导入格式和图片标注流程参考 MIT 授权的 [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)，版本 `88b8a1b`，许可保留在 `webui/upstream/LICENSE`。本扩展不执行 AstrBot 插件，不包含资源广场、自动收集和云同步。图片许可沿用资源包声明。

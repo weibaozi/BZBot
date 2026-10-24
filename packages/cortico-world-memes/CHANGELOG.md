@@ -2,9 +2,11 @@
 
 ## 0.6.0
 
-- Select saved global endpoints for embeddings and visual captions from the management panel.
-- Reuse provider adapters, model settings and stored API keys or login credentials for visual captions; retain custom endpoints as an option.
-- Refresh saved model selections without copying credentials into the panel or changing the main conversation model.
+- Use ModelHub references for embeddings and image-capable caption models; both selections default to empty. Framework `x-options` supplies the filtered choices.
+- Remove plugin-owned endpoints, provider selection and credential storage. ModelHub owns protocols and authentication.
+- Send caption images as `input_image`, disable thinking and cap output at 1024 tokens per request. Report generation usage through the World host, including responses that fail JSON parsing.
+- Fingerprint indexes by model reference and query prefix; incompatible indexes require rebuilding.
+- 升级办法：在模型中心建好嵌入模型和能看图的对话模型，在表情包设置里选上，然后「重建全部向量」。图片、分类和语义标签保留；旧插件地址与密钥配置不再使用。
 
 ## 0.5.1
 

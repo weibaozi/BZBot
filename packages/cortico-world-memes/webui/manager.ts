@@ -9,7 +9,7 @@ interface State {
   semantic: { total: number; described: number; review: number; failed: number };
   job: { state: string; error?: string; result?: { path?: string }; progress?: { stage: string; done: number; total: number; failed: number; skipped: number; errors: Array<{ id: string; error: string }> } };
 }
-interface Settings { schema: { properties: Record<string, { type: string; title?: string; minimum?: number; maximum?: number }> }; values: Record<string, string | number | boolean>; keys: Record<string, boolean>; models: Array<{ name: string; model: string; images: boolean; module: string }> }
+interface Settings { schema: { properties: Record<string, { type: string; title?: string; minimum?: number; maximum?: number; 'x-options'?: string }> }; values: Record<string, string | number | boolean> }
 
 export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
   const { root, signal } = ctx;
@@ -195,22 +195,33 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
 
   async function loadSettings() {
     const settings = await ctx.invoke<Settings>('settings'); settingsBody.replaceChildren(); workflow.replaceChildren(); const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
-    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes']], ['语义检索', ['embeddingProvider', 'embeddingUrl', 'embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['visionProvider', 'visionUrl', 'visionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
+    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes']], ['语义检索', ['embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['captionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
     for (const [title, keys] of groups) {
       const section = h('section', '', 'port-settings-group'); section.append(h('h3', title)); workflow.append(button(title, async () => { section.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 'ghost'));
       for (const key of keys) {
         const path = `worlds.memes.memes.${key}`; const schema = settings.schema.properties[path]; if (!schema) continue; const label = h('label', schema.title ?? key, 'port-field'); label.dataset.configKey = key;
-        if (key === 'embeddingProvider' || key === 'visionProvider') {
+        if (schema['x-options']) {
           const select = h('select'); select.setAttribute('aria-label', schema.title ?? key);
-          const custom = h('option', '自定义端点'); custom.value = ''; select.append(custom);
-          for (const model of settings.models) {
-            const option = h('option', `${model.name} · ${model.model || '未配置模型'}${key === 'visionProvider' && !model.images ? '（未启用图片输入）' : ''}`);
-            option.value = model.name; select.append(option);
-          }
-          const current = String(settings.values[key] ?? '');
-          if (current && !settings.models.some(model => model.name === current)) { const missing = h('option', `${current}（已不存在，请重新选择）`); missing.value = current; select.append(missing); }
-          select.value = current; select.addEventListener('change', () => { dirtySettings = true; }, { signal });
-          label.append(select); section.append(label); inputs.set(path, select); continue;
+          const fill = (options: Array<{ value: string; label: string }>, current: string) => {
+            select.replaceChildren();
+            const choices = new Map([['', '请选择模型']]);
+            for (const option of options) choices.set(option.value, option.label);
+            if (current && !choices.has(current)) choices.set(current, `${current}（不可用，请重新选择）`);
+            for (const [value, label] of choices) { const option = h('option', label); option.value = value; select.append(option); }
+            select.value = current;
+          };
+          fill([], String(settings.values[key] ?? ''));
+          let sequence = 0;
+          const refresh = async () => {
+            const request = ++sequence;
+            const response = await fetch(`/api/config/options/${encodeURIComponent(schema['x-options']!)}`, { signal });
+            if (!response.ok) throw new Error(`加载模型选项失败（HTTP ${response.status}）`);
+            const data = await response.json() as { options: Array<{ value: string; label: string }> };
+            if (request === sequence && !signal.aborted) fill(data.options, select.value);
+          };
+          for (const event of ['focus', 'pointerdown']) select.addEventListener(event, () => { void run(refresh); }, { signal });
+          select.addEventListener('change', () => { dirtySettings = true; }, { signal });
+          label.append(select); section.append(label); inputs.set(path, select); void run(refresh); continue;
         }
         const input = h('input');
         input.type = schema.type === 'boolean' ? 'checkbox' : ['integer', 'number'].includes(schema.type) ? 'number' : 'text'; input.setAttribute('aria-label', schema.title ?? key);
@@ -218,17 +229,8 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
         if (schema.minimum !== undefined) input.min = String(schema.minimum); if (schema.maximum !== undefined) input.max = String(schema.maximum); if (schema.type === 'number') input.step = '0.01';
         input.addEventListener('input', () => { dirtySettings = true; }, { signal }); label.append(input); section.append(label); inputs.set(path, input);
       }
-      const kind = title === '视觉标注' ? 'vision' : title === '语义检索' ? 'embedding' : '';
-      if (kind) { const secret = h('input'); secret.type = 'password'; secret.autocomplete = 'new-password'; secret.placeholder = settings.keys[kind] ? '密钥已配置；输入新值可替换' : 'API Key（本地无鉴权服务可留空）'; secret.setAttribute('aria-label', `${title} API Key`);
-        const secretRow = h('div'); secretRow.dataset.customEndpoint = 'true'; secretRow.append(secret, button('保存密钥', async () => { await ctx.invoke('key', [{ kind, key: secret.value }]); secret.value = ''; secret.placeholder = '密钥已配置'; report.textContent = '密钥已保存'; })); section.append(secretRow); }
-      if (kind) {
-        const selection = inputs.get(`worlds.memes.memes.${kind}Provider`)!;
-        const update = () => {
-          section.querySelectorAll<HTMLElement>(`[data-config-key="${kind}Url"], [data-config-key="${kind}Model"], [data-custom-endpoint]`).forEach(field => { field.hidden = Boolean(selection.value); });
-        };
-        selection.addEventListener('change', update, { signal }); update();
-        section.append(h('p', kind === 'embedding' ? '选择支持 /embeddings 的全局模型。修改模型后需重建向量。' : '使用全局模型的协议、参数和已有登录或密钥；图片输入需在供应商中启用。', 'hint'));
-      }
+      if (title === '语义检索') section.append(h('p', '先在模型中心配置嵌入模型。修改模型后需重建全部向量。', 'hint'));
+      if (title === '视觉标注') section.append(h('p', '从模型中心选择支持图片输入的对话模型，地址与密钥在模型中心配置。', 'hint'));
       settingsBody.append(section);
     }
     settingsBody.append(button('保存模式设置', async () => {
