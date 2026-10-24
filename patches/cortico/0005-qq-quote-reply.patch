@@ -1,0 +1,241 @@
+diff --git a/src/worlds/qq/config.ts b/src/worlds/qq/config.ts
+index ae002a1..43eed94 100644
+--- a/src/worlds/qq/config.ts
++++ b/src/worlds/qq/config.ts
+@@ -2,6 +2,7 @@ import type { ConfigGroup } from '../../core/types.ts';
+ import type { Language } from '../../core/language.ts';
+ import type { VisionConfig } from './vision.ts';
+ import { text } from './strings.ts';
++import { replyText } from './reply-strings.ts';
+ 
+ /** 关闭的 roster 条目仍持久化并显示,仅从监听集合中排除。 */
+ export interface QQRosterEntry {
+@@ -11,6 +12,7 @@ export interface QQRosterEntry {
+ 
+ export const QQ_DEFAULTS = {
+   enabled: false,
++  quoteReply: false,
+   /** OneBot v11 协议端的正向 WS 地址 */
+   wsUrl: 'ws://127.0.0.1:3001',
+   groups: [] as QQRosterEntry[],
+@@ -26,7 +28,7 @@ export const QQ_SECRETS = { vision: 'OPENROUTER_API_KEY' } as const;
+ 
+ /**
+  * 本 World 声明的可调项。只声明**World 自己**的参数:连接与监听名单有
+- * 专用面板(要卡片式增删、要重启),这里放的是自带视觉的行为旋钮。文案按界面语言给。
++ * 专用面板(要卡片式增删、要重启),这里声明回复与辅助视觉配置。文案按界面语言给。
+  */
+ export function qqConfigGroup(language: Language): ConfigGroup {
+   const t = text(language);
+@@ -35,9 +37,14 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+     owner: 'world:qq',
+     schema: {
+       type: 'object',
+-      title: t.configTitle,
+-      description: t.configDescription,
++      title: 'QQ',
+       properties: {
++        'worlds.qq.quoteReply': {
++          type: 'boolean',
++          title: replyText(language).title,
++          description: replyText(language).description,
++          'x-hot': true,
++        },
+         'worlds.qq.vision.enabled': {
+           type: 'boolean',
+           title: t.visionEnabledTitle,
+@@ -100,6 +107,7 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+ /** config.json 的 `worlds.qq` 节。 */
+ export interface QQConfigSection {
+   enabled: boolean;
++  quoteReply: boolean;
+   /** OneBot v11 协议端的正向 WS 地址 */
+   wsUrl: string;
+   /** 群 roster,逐项热更新;关闭的条目仍持久化并显示,但不参与监听。 */
+diff --git a/src/worlds/qq/definition.ts b/src/worlds/qq/definition.ts
+index bf63e14..8a2d006 100644
+--- a/src/worlds/qq/definition.ts
++++ b/src/worlds/qq/definition.ts
+@@ -35,6 +35,7 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+       },
+       {
+         vision,
++        quoteReply: () => cfg.quoteReply,
+         imageCapture: cfg.vision,
+         gate: {
+           enabled: () => cfg.enabled,
+diff --git a/src/worlds/qq/reply-strings.ts b/src/worlds/qq/reply-strings.ts
+new file mode 100644
+index 0000000..1e019db
+--- /dev/null
++++ b/src/worlds/qq/reply-strings.ts
+@@ -0,0 +1,17 @@
++import type { Language } from '../../core/language.ts';
++
++const strings: Record<Language, { title: string; description: string }> = {
++  zh: { title: '引用回复', description: '默认关闭。开启后，模型可引用消息回复；关闭时只发送正文或附件，不附带引用。保存后对下一次发送生效。' },
++  'zh-Hant': { title: '引用回覆', description: '預設關閉。開啟後，模型可引用訊息回覆；關閉時只傳送文字或附件，不附帶引用。儲存後對下一次傳送生效。' },
++  en: { title: 'Quote replies', description: 'Off by default. When on, the model may quote a message in its reply. When off, only text or attachments are sent, without a quote. Changes apply to the next send.' },
++  ja: { title: '引用返信', description: '初期設定はオフです。オンにするとモデルはメッセージを引用して返信できます。オフでは本文や添付のみを送信します。変更は次の送信から適用されます。' },
++  ko: { title: '인용 답장', description: '기본값은 꺼짐입니다. 켜면 모델이 메시지를 인용해 답장할 수 있습니다. 끄면 인용 없이 본문이나 첨부만 전송합니다. 변경 사항은 다음 전송부터 적용됩니다.' },
++  fr: { title: 'Réponses avec citation', description: 'Désactivé par défaut. Si activé, le modèle peut citer un message dans sa réponse. Sinon, seuls le texte ou les pièces jointes sont envoyés. La modification prend effet au prochain envoi.' },
++  de: { title: 'Antworten mit Zitat', description: 'Standardmäßig aus. Wenn aktiviert, kann das Modell eine Nachricht zitieren. Andernfalls werden nur Text oder Anhänge gesendet. Änderungen gelten ab dem nächsten Senden.' },
++  'es-419': { title: 'Respuestas con cita', description: 'Desactivado de forma predeterminada. Al activarlo, el modelo puede citar un mensaje al responder. Si está desactivado, solo se envían texto o adjuntos. Los cambios se aplican al próximo envío.' },
++  'pt-BR': { title: 'Respostas com citação', description: 'Desativado por padrão. Quando ativado, o modelo pode citar uma mensagem na resposta. Caso contrário, envia apenas texto ou anexos. As alterações valem para o próximo envio.' },
++  it: { title: 'Risposte con citazione', description: 'Disattivato per impostazione predefinita. Se attivo, il modello può citare un messaggio nella risposta. Altrimenti vengono inviati solo testo o allegati. Le modifiche valgono dal prossimo invio.' },
++  ru: { title: 'Ответы с цитатой', description: 'По умолчанию выключено. Если включено, модель может цитировать сообщение в ответе. Иначе отправляются только текст или вложения. Изменение действует со следующей отправки.' },
++};
++
++export const replyText = (language: Language) => strings[language];
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 73c78e9..fc0a7e1 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -50,7 +50,7 @@ import {
+ } from './normalize.ts';
+ import { VISION_DEFAULTS, type VisionConfig, type VisionService } from './vision.ts';
+ import { downloadImageBytes } from './image-download.ts';
+-import { qqConfigGroup, type QQRosterEntry } from './config.ts';
++import { qqConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
+ import { text } from './strings.ts';
+ 
+ export type { Conv } from './conversation.ts';
+@@ -121,6 +121,7 @@ interface QQGatePanelDeps {
+ }
+ 
+ interface QQWorldDeps {
++  quoteReply?: () => boolean;
+   vision?: VisionService;
+   /** 无辅助视觉时下载入站图片用的上限;传入配置对象本身,热更新随之生效。 */
+   imageCapture?: QQImageCaptureOptions;
+@@ -185,7 +186,7 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+       reply_to: {
+         type: 'string',
+         description:
+-          'Optional. The QQ message id to quote-reply — the `#<id>` shown at the start of that message line.',
++          'Optional. The QQ message id to quote-reply — the `#<id>` shown at the start of that message line. When quote replies are disabled, this still identifies the recipient but no quote is sent; the draft receipt states this.',
+       },
+     },
+     required: [],
+@@ -289,11 +290,13 @@ export class QQWorld implements World {
+     this.vision = deps?.vision;
+     this.imageCapture = deps?.imageCapture ?? VISION_DEFAULTS;
+     this.gate = deps?.gate;
++    this.quoteReply = deps?.quoteReply ?? (() => QQ_DEFAULTS.quoteReply);
+     this.watchedGroups = new Set(cfg.groups);
+     this.watchedPrivates = new Set(cfg.privates);
+   }
+ 
+   private readonly gate?: QQGatePanelDeps;
++  private readonly quoteReply: () => boolean;
+ 
+   /** 被动识图在视觉服务可用时启用；识图描述写入事件库作为可检索记忆。 */
+   private passiveEnabled(): boolean {
+@@ -1488,7 +1491,7 @@ export class QQWorld implements World {
+     }
+     const message = buildOutgoing({
+       text: opts.text,
+-      reply_to_message_id: opts.replyMessageId,
++      reply_to_message_id: this.quoteReply() ? opts.replyMessageId : undefined,
+       image_base64: imageBase64,
+       ...(opts.voiceBytes ? { record_base64: Buffer.from(opts.voiceBytes).toString('base64') } : {}),
+     });
+@@ -1533,7 +1536,9 @@ export class QQWorld implements World {
+     if (messageId !== undefined) {
+       this.knownMessages.set(String(messageId), { conv: target, ts: env.ts });
+     }
+-    return `[sent${messageId !== undefined ? ` #${messageId}` : ''} → ${this.targetDesc(target)}]`;
++    const omittedQuote = opts.replyMessageId !== undefined && !message.some(segment => segment.type === 'reply');
++    return `[sent${messageId !== undefined ? ` #${messageId}` : ''} → ${this.targetDesc(target)}]`
++      + (omittedQuote ? '\nQuote replies are disabled; sent without quoting.' : '');
+   }
+ 
+ 
+@@ -1625,6 +1630,9 @@ export class QQWorld implements World {
+         ctx.queueExternalEvents?.(drained);
+ 
+         const lines = [`[draft staged → ${this.targetDesc(target)}]`];
++        if (rep.mid !== undefined) lines.push(this.quoteReply()
++          ? `Will quote #${rep.mid}.`
++          : 'Quote replies are disabled; this draft will be sent without quoting.');
+         lines.push(text.trim() ? `Text: ${text}` : voiceRef ? '(voice bar, no text)' : '(image only, no text)');
+         if (previewLine) lines.push(previewLine);
+         lines.push(
+diff --git a/tests/integration/qq-quote-reply.test.ts b/tests/integration/qq-quote-reply.test.ts
+new file mode 100644
+index 0000000..b1c74f9
+--- /dev/null
++++ b/tests/integration/qq-quote-reply.test.ts
+@@ -0,0 +1,59 @@
++import { expect, it } from 'vitest';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { LANGUAGES } from '../../src/core/language.ts';
++import { qqConfigGroup, QQ_DEFAULTS } from '../../src/worlds/qq/config.ts';
++import { MockOneBot } from '../helpers/mock-onebot.ts';
++import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
++
++it.each(['group', 'private'] as const)('%s replies omit quotes by default and honor changes at send time', async kind => {
++  const tmp = makeTmpDir();
++  const mock = new MockOneBot({ port: 0, groupId: 424242 });
++  const port = await mock.start();
++  const cfg = makeCfg();
++  cfg.worlds.qq = { ...cfg.worlds.qq, enabled: true, wsUrl: `ws://127.0.0.1:${port}`,
++    groups: [{ id: 424242, enabled: true }], privates: [{ id: 1001, enabled: true }] };
++  cfg.worlds.console.enabled = false; cfg.web.port = 0;
++  cfg.tick.dayIntervalMinutes = [999, 999]; cfg.tick.nightIntervalMinutes = null;
++  const memoryDir = join(tmp.dir, 'memory'); mkdirSync(memoryDir, { recursive: true });
++  writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
++  const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm: new FakeLLM() });
++  bot.core.bus.setPaused(true);
++  try {
++    await bot.start(); await bot.qqWorld!.waitReady(5000);
++    expect(cfg.worlds.qq.quoteReply).toBe(QQ_DEFAULTS.quoteReply);
++    expect(cfg.worlds.qq.quoteReply).toBe(false);
++    const message = { user_id: 1001, nickname: 'fixture', text: 'hello' };
++    const mid = kind === 'group' ? mock.emitGroupMessage(message) : mock.emitPrivateMessage(message);
++    const deadline = Date.now() + 5000;
++    while (!bot.core.store.range({}).some(e => e.meta?.message_id === mid) && Date.now() < deadline) await sleep(20);
++    expect(bot.core.store.range({}).some(e => e.type === 'qq.message' && e.meta?.message_id === mid)).toBe(true);
++    const tool = (name: string) => bot.qqWorld!.tools().find(t => t.name === name)!;
++    const ctx = { role: 'main', log: nullLogger() };
++    const draft = () => tool('qq_draft').handler({ text: 'reply', reply_to: String(mid) }, ctx);
++    const send = () => tool('qq_confirm').handler({ decision: 'send' }, ctx);
++    expect(await draft()).toContain('without quoting');
++    expect(await send()).toContain('sent without quoting');
++    expect(mock.outbox[0]).toMatchObject({ action: `send_${kind}_msg`, params: { message: [{ type: 'text', data: { text: 'reply' } }] } });
++    cfg.worlds.qq.quoteReply = true;
++    expect(await draft()).toContain(`Will quote #${mid}`);
++    await send();
++    expect(mock.outbox[1].params.message).toEqual([{ type: 'reply', data: { id: String(mid) } }, { type: 'text', data: { text: 'reply' } }]);
++    await draft(); cfg.worlds.qq.quoteReply = false;
++    expect(await send()).toContain('sent without quoting');
++    expect(mock.outbox[2].params.message).toEqual([{ type: 'text', data: { text: 'reply' } }]);
++    expect(bot.core.store.range({}).filter(e => e.type === 'qq.self')).toHaveLength(3);
++  } finally { await bot.stop(); await mock.close(); tmp.cleanup(); }
++}, 15000);
++
++it('declares the hot quote setting in every supported UI language', () => {
++  const titles = LANGUAGES.map(language => {
++    const field = qqConfigGroup(language).schema.properties!['worlds.qq.quoteReply'];
++    expect(field).toMatchObject({ type: 'boolean', 'x-hot': true });
++    expect(field.description).toBeTruthy();
++    return field.title;
++  });
++  expect(new Set(titles).size).toBe(LANGUAGES.length);
++});
+diff --git a/tests/worlds/qq/world-loop.test.ts b/tests/worlds/qq/world-loop.test.ts
+index 1f05d72..b6578e7 100644
+--- a/tests/worlds/qq/world-loop.test.ts
++++ b/tests/worlds/qq/world-loop.test.ts
+@@ -34,7 +34,7 @@ beforeEach(async () => {
+   });
+   port = await mock.start();
+   host = new FakeHost();
+-  mod = new QQWorld({ wsUrl: `ws://127.0.0.1:${port}`, groups: [GROUP], privates: [], token: '' });
++  mod = new QQWorld({ wsUrl: `ws://127.0.0.1:${port}`, groups: [GROUP], privates: [], token: '' }, { quoteReply: () => true });
+   await mod.start(host);
+   await mod.waitReady();
+ });
