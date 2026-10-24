@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BaseProvider, type ListedModel, type ProviderHost } from 'cortico/providers/base.ts';
 import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
 import type { GenerateOptions, Generation } from 'cortico/core/generation.ts';
@@ -51,12 +52,24 @@ export class PlanResponses extends ResponsesProvider {
   }
 }
 
+/**
+ * The plan endpoint reuses cached prompt prefixes only for requests carrying a `session_id` header; with
+ * `prompt_cache_key` alone every request missed in measurement, and it rejects explicit cache breakpoints.
+ * The id is a UUID derived from the provider directory and the session, so it holds across restarts.
+ */
+export function planSessionHeaders(stateDir: string, sessionId: string | undefined): Record<string, string> {
+  if (!sessionId) return {};
+  const hex = createHash('sha256').update(`${stateDir}\0${sessionId}`).digest('hex');
+  return { session_id: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}` };
+}
+
 export class ChatGptClient extends BaseProvider {
   constructor(private auth: ChatGptAuth, private host: ProviderHost, private images: () => boolean) { super(); }
   async respond(request: Request, options: GenerateOptions = {}) {
     if (!request.model || request.model === '__login_required__') throw new Error('Select a model after signing in with ChatGPT');
     const signal = options.signal ? AbortSignal.any([options.signal, this.auth.signal]) : this.auth.signal;
     const client = new PlanResponses({ baseUrl: RESOURCE, apiKey: await this.auth.accessToken(), log: this.host.log,
+      extraHeaders: planSessionHeaders(this.host.stateDir, options.sessionId),
       media: { enabled: this.images, read: this.host.readBlob }, keepThinking: this.host.keepThinking });
     signal.throwIfAborted();
     return client.respond(request, { ...options, signal });

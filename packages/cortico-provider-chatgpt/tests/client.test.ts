@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { expect, it } from 'vitest';
-import { PlanResponses, PlanResponseAssembly } from '../server/client.ts';
+import { PlanResponses, PlanResponseAssembly, planSessionHeaders } from '../server/client.ts';
 import { createResponse } from 'cortico/protocol/open-responses/index.ts';
 import type { Request } from 'cortico/protocol/open-responses/index.ts';
 
@@ -25,6 +25,30 @@ it('uses streaming for probes, omits unsupported settings, preserves history and
     expect(received).not.toHaveProperty('temperature'); expect(received).not.toHaveProperty('max_output_tokens');
     expect(received.input).toHaveLength(1);
     expect(received.tools[0]).toMatchObject({ type: 'namespace', name: 'mybot', tools: [{ name: 'send_reply' }] });
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+it('sends a stable session header per provider directory and session, and none without a session', async () => {
+  const headers = planSessionHeaders('/providers/ChatGPT', 'main');
+  expect(headers.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  expect(planSessionHeaders('/providers/ChatGPT', 'main')).toEqual(headers);
+  expect(planSessionHeaders('/providers/ChatGPT', 'dream').session_id).not.toBe(headers.session_id);
+  expect(planSessionHeaders('/providers/Other', 'main').session_id).not.toBe(headers.session_id);
+  expect(planSessionHeaders('/providers/ChatGPT', undefined)).toEqual({});
+  let sent: string | string[] | undefined;
+  const request: Request = { model: 'test-model', input: [{ type: 'message', role: 'user', content: 'Hello' }] };
+  const server = createServer((req, res) => { void (async () => {
+    for await (const _ of req) { /* drain the body */ }
+    sent = req.headers.session_id;
+    const response = { ...createResponse('response_local', request), status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } };
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(`data: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response: { ...response, status: 'in_progress' } })}\n\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 1, response })}\n\n`);
+  })(); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new PlanResponses({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`, extraHeaders: headers });
+    await client.respond(request, { sessionId: 'main' });
+    expect(sent).toBe(headers.session_id);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
