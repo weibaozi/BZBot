@@ -19,17 +19,32 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
   writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
   const llm = new FakeLLM();
   const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm });
-  const { instance } = world(tmp.dir, undefined, async input => input.instruction.includes('检索词') ? { query: '抱抱安慰' } : { meme_id: (input.data as { candidates: Array<{ id: string }> }).candidates[0].id });
+  let auxiliaryCalls = 0;
+  const { instance, cfg: memeCfg } = world(tmp.dir, undefined, async () => { auxiliaryCalls++; throw new Error('Unexpected auxiliary request'); });
+  memeCfg.memes.minScore = -1;
   try {
     await instance.library.importZip(await archive(tmp.dir), 'python'); await instance.search.build();
-    const entry = (await instance.library.entries()).find(e => e.category === 'affection')!;
+    const entry = (await instance.library.entries()).find(e => e.category === 'happy')!;
     await bot.start(); await bot.qqWorld!.waitReady(5000);
     await bot.core.mountWorld(instance);
+    onebot.emitGroupMessage({ user_id: 1001, nickname: 'fixture', text: '之前说过我喜欢庆祝的表情' });
+    const priorDeadline = Date.now() + 5000;
+    while (!llm.calls.some(call => JSON.stringify(call.messages).includes('之前说过我喜欢庆祝的表情')) && Date.now() < priorDeadline) await new Promise(r => setTimeout(r, 40));
+    expect(llm.calls.some(call => JSON.stringify(call.messages).includes('之前说过我喜欢庆祝的表情'))).toBe(true);
     let stage = 0;
     llm.fallback = () => {
       stage++;
-      if (stage === 1) return toolReply([{ name: 'qqextras_choose_meme', args: { reply: '给你一个抱抱' } }]);
-      if (stage === 2) return toolReply([{ name: 'qqextras_get_meme', args: { id: entry.id } }]);
+      if (stage === 1) return toolReply([{ name: 'qqextras_search_memes', args: { keywords: ['抱抱', '安慰'] } }]);
+      if (stage === 2) {
+        const messages = llm.calls.at(-1)!.messages;
+        const history = JSON.stringify(messages);
+        expect(history).toContain('之前说过我喜欢庆祝的表情');
+        expect(history).toContain('给对方一个抱抱');
+        expect(history).toContain('开心庆祝');
+        expect(messages[0]).toEqual(llm.calls.at(-2)!.messages[0]);
+        // The conversation model may choose a lower-ranked candidate using existing context.
+        return toolReply([{ name: 'qqextras_get_meme', args: { id: entry.id } }]);
+      }
       if (stage === 3) {
         const history = JSON.stringify(llm.calls.at(-1)?.messages);
         const handle = history.match(/log:[a-f0-9]+\.png/)?.[0];
@@ -44,6 +59,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
     while (!onebot.outbox.some(o => o.action === 'send_group_msg') && Date.now() < deadline) await new Promise(r => setTimeout(r, 40));
     const sent = onebot.outbox.find(o => o.action === 'send_group_msg');
     expect(sent).toBeTruthy();
+    expect(auxiliaryCalls).toBe(0);
     expect(JSON.stringify(sent?.params)).toContain(PNG.toString('base64'));
     expect(bot.core.store.range({}).some(e => e.type === 'qq.self')).toBe(true);
   } finally { await bot.stop(); await onebot.close(); tmp.cleanup(); }

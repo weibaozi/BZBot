@@ -11,8 +11,8 @@ import { MemeSemantic, type Progress } from './server/semantic.ts';
 import { type Generate } from './server/models.ts';
 
 export const QQEXTRAS_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
-  { name: 'qqextras_choose_meme', tags: ['read'], description: 'Ask the auxiliary model to select a meme for your prepared reply: it generates a query, retrieves candidates and chooses one or none. Works for any conversation; sends nothing. Call at most once per reply.',
-    parameters: { type: 'object', properties: { reply: { type: 'string', description: 'The reply you intend to send.' }, context: { type: 'array', items: { type: 'string' }, description: 'Optional recent conversation turns, oldest first; include only the current recipient.' }, persona: { type: 'string', description: 'Optional short persona reference; only used if enabled by the operator.' } }, required: ['reply'] } },
+  { name: 'qqextras_search_memes', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags and ids; sends nothing. Call at most once per reply.',
+    parameters: { type: 'object', properties: { keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'A few short phrases describing your intended expression, attitude, action and recipient relationship. Reuse the current conversation; do not copy its history or persona.' } }, required: ['keywords'] } },
   { name: 'qqextras_get_meme', tags: ['read'], description: 'Read a selected meme image. Use its blob handle with the current channel\'s image-capable sending tool. This tool does not send.',
     parameters: { type: 'object', properties: { id: { type: 'string', description: 'Exact candidate id returned by search.' } }, required: ['id'] } },
 ];
@@ -29,9 +29,9 @@ export class QqextrasWorld implements World {
     this.library = new MemeLibrary(join(ctx.botDir, 'qqextras', 'memes'));
     this.search = new MemeSearch(this.library, () => ({ url: ctx.cfg.memes.embeddingUrl, model: ctx.cfg.memes.embeddingModel,
       queryPrefix: ctx.cfg.memes.queryPrefix, key: ctx.secret('CORTICO_MEME_EMBEDDING_KEY') }), embed);
-    this.semantic = new MemeSemantic(this.library, this.search, () => ctx.cfg.memes, kind => ({
-      url: ctx.cfg.memes[`${kind}Url`], model: ctx.cfg.memes[`${kind}Model`],
-      key: ctx.secret(kind === 'vision' ? 'CORTICO_MEME_VISION_KEY' : 'CORTICO_MEME_AUXILIARY_KEY'), timeoutSeconds: ctx.cfg.memes.timeoutSeconds,
+    this.semantic = new MemeSemantic(this.library, this.search, () => ctx.cfg.memes, () => ({
+      url: ctx.cfg.memes.visionUrl, model: ctx.cfg.memes.visionModel,
+      key: ctx.secret('CORTICO_MEME_VISION_KEY'), timeoutSeconds: ctx.cfg.memes.timeoutSeconds,
     }), generate);
   }
   envPromptVars() { return this.ctx.cfg.memes.enabled ? {} : null; }
@@ -40,8 +40,8 @@ export class QqextrasWorld implements World {
   tools(): ToolDef[] {
     return QQEXTRAS_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');
-      if (decl.name === 'qqextras_choose_meme') {
-        return JSON.stringify(await this.semantic.choose(args, AbortSignal.any([this.abort.signal, ...(context.signal ? [context.signal] : [])])));
+      if (decl.name === 'qqextras_search_memes') {
+        return JSON.stringify(await this.semantic.recall(args, AbortSignal.any([this.abort.signal, ...(context.signal ? [context.signal] : [])])));
       }
       if (typeof args.id !== 'string') throw new Error('id must be a string');
       const pack = (await this.library.packs()).find(p => args.id!.toString().startsWith(p.id + ':'));
@@ -68,7 +68,7 @@ export class QqextrasWorld implements World {
     return {
       label: t('表情包管理', 'Meme manager'), config: [qqextrasConfigGroup(language)],
       panels: [{ id: 'memes', title: t('表情包', 'Memes') }],
-      promptDocs: [{ key: 'worlds.qqextras.environment', title: t('表情使用说明', 'Meme usage'), description: t('辅助模型根据准备发送的回复检索并选图。', 'An auxiliary model retrieves and selects an image for the prepared reply.'),
+      promptDocs: [{ key: 'worlds.qqextras.environment', title: t('表情使用预设模板', 'Meme usage template'), description: t('主模型结合当前对话判断是否配图，给出关键词，再从向量候选中选择。', 'The conversation model decides whether to use a meme, supplies keywords and chooses from vector candidates.'),
         path: existsSync(override) ? override : fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url)), deploymentPath: override, role: 'envPrompt' as const }],
       invoke: async (panel: string, method: string, args: unknown[]) => {
         if (panel !== 'memes') throw new Error('Unknown panel');
@@ -110,17 +110,14 @@ export class QqextrasWorld implements World {
           return this.launch('export', signal => this.library.exportZip(packId, directory, this.ctx.cfg.memes.pythonFile, signal));
         }
         if (method === 'settings') return { schema: qqextrasConfigGroup(language).schema, values: this.ctx.cfg.memes,
-          keys: Object.fromEntries(['EMBEDDING', 'AUXILIARY', 'VISION'].map(kind => [kind.toLowerCase(), Boolean(this.ctx.secret(`CORTICO_MEME_${kind}_KEY`))])) };
+          keys: Object.fromEntries(['EMBEDDING', 'VISION'].map(kind => [kind.toLowerCase(), Boolean(this.ctx.secret(`CORTICO_MEME_${kind}_KEY`))])) };
         if (method === 'key') {
           if (typeof arg.key !== 'string' || !arg.key.trim()) throw new Error('Key cannot be empty');
-          const kind = arg.kind === 'vision' ? 'VISION' : arg.kind === 'auxiliary' ? 'AUXILIARY' : 'EMBEDDING';
+          if (arg.kind !== 'vision' && arg.kind !== 'embedding') throw new Error('Unknown model kind');
+          const kind = arg.kind === 'vision' ? 'VISION' : 'EMBEDDING';
           this.ctx.storeSecret(`CORTICO_MEME_${kind}_KEY`, arg.key.trim()); return { saved: true };
         }
-        if (method === 'choose') return this.semantic.choose(arg, this.abort.signal);
-        if (method === 'search') {
-          if (typeof arg.query !== 'string') throw new Error('query must be a string');
-          return this.search.search(arg.query, this.ctx.cfg.memes.topK, this.abort.signal);
-        }
+        if (method === 'search') return this.semantic.recall(arg, this.abort.signal);
         if (method === 'list') {
           const offset = typeof arg.offset === 'number' && Number.isInteger(arg.offset) && arg.offset >= 0 ? arg.offset : 0;
           const query = typeof arg.query === 'string' ? arg.query.toLowerCase().slice(0, 200) : '';

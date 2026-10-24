@@ -1,11 +1,11 @@
 {
   "name": "cortico-world-qqextras",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "packageManager": "pnpm@11.28.6",
   "type": "module",
   "main": "./index.ts",
-  "description": "Cross-channel meme management and auxiliary semantic selection",
+  "description": "Cross-channel meme management and vector retrieval with in-context selection",
   "keywords": [
     "cortico-world"
   ],

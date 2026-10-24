@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { archive, PNG, world } from './helpers.ts';
-import type { Generate, ModelInput } from '../server/models.ts';
+import type { Generate } from '../server/models.ts';
 import type { Progress } from '../server/semantic.ts';
 const dirs: string[] = [];
 async function setup(generate: Generate) {
@@ -14,21 +14,39 @@ async function setup(generate: Generate) {
 }
 const progress = (): Progress => ({ stage: '', done: 0, total: 0, failed: 0, skipped: 0, errors: [] });
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
-it('auxiliary selection uses a short query and a second candidate decision, with bounded reference context', async () => {
-  const inputs: ModelInput[] = [];
-  const { instance, cfg } = await setup(async input => { inputs.push(input); return inputs.length === 1 ? { query: '抱抱安慰' } : { meme_id: (input.data as { candidates: Array<{ id: string }> }).candidates[0].id }; });
-  cfg.memes.contextTurns = 1; cfg.memes.injectPersona = false; await instance.search.build();
-  const result = await instance.semantic.choose({ reply: '给你一个抱抱', context: ['earlier', 'latest'], persona: 'excluded' });
-  expect(result.selected?.category).toBe('affection'); expect(result.sent).toBe(false);
-  expect(inputs[0].data).toEqual({ reply: '给你一个抱抱', context: ['latest'] });
-  expect(inputs).toHaveLength(2); expect(inputs[1].data).toHaveProperty('candidates');
+it('recall returns ranked candidates without any generation call and reuses query embeddings', async () => {
+  let generations = 0;
+  const { instance, cfg } = await setup(async () => { generations++; throw new Error('Retrieval must not call a model'); });
+  cfg.memes.minScore = -1; await instance.search.build();
+  const result = await instance.semantic.recall({ keywords: ['抱抱', '安慰', '抱抱'] });
+  expect(result).toMatchObject({ query: '抱抱 安慰', reason: 'candidates', sent: false, queryCached: false });
+  expect(result.candidates.map(c => c.category)).toEqual(['affection', 'happy']);
+  expect(result.candidates[0]).toMatchObject({ caption: '给对方一个抱抱', tags: ['安慰', '拥抱'], visibleText: '抱抱' });
+  expect(result).not.toHaveProperty('selected');
+  expect(await instance.semantic.recall({ keywords: ['抱抱', '安慰'] })).toMatchObject({ queryCached: true });
+  expect(generations).toBe(0);
 });
-it('declining and invalid candidate ids never turn into an image; disabled probability skips model work', async () => {
-  let calls = 0; let invalid = false;
-  const { instance, cfg } = await setup(async input => { calls++; return input.instruction.includes('检索词') ? { query: '抱抱' } : { meme_id: invalid ? 'outside' : '' }; }); await instance.search.build();
-  expect((await instance.semantic.choose({ reply: '好呀' })).selected).toBeNull();
-  invalid = true; await expect(instance.semantic.choose({ reply: '好呀' })).rejects.toThrow('候选之外');
-  const before = calls; cfg.memes.probability = 0; expect((await instance.semantic.choose({ reply: '好呀' })).reason).toBe('probability'); expect(calls).toBe(before);
+it('gates and empty candidates return facts without making a final selection', async () => {
+  const { instance, cfg } = await setup(async () => { throw new Error('Unexpected generation'); });
+  cfg.memes.probability = 0;
+  expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toEqual({ candidates: [], reason: 'probability', sent: false });
+  cfg.memes.probability = 100; cfg.memes.maxMemes = 0;
+  expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toMatchObject({ candidates: [], reason: 'disabled' });
+  cfg.memes.maxMemes = 1;
+  await expect(instance.semantic.recall({ keywords: ['抱抱'] })).rejects.toThrow('index unavailable');
+  await instance.search.build(); cfg.memes.minScore = 0.5; cfg.memes.topK = 1;
+  expect((await instance.semantic.recall({ keywords: ['抱抱'] })).candidates).toHaveLength(1);
+  const pack = (await instance.library.catalog())[0];
+  await instance.library.edit({ kind: 'pack', packId: pack.id, revision: pack.revision, name: pack.name, enabled: false });
+  expect(await instance.semantic.recall({ keywords: ['抱抱'] })).toMatchObject({ candidates: [], reason: 'no_candidates', sent: false });
+});
+it('validates keyword boundaries and respects cancellation before retrieval', async () => {
+  const { instance } = await setup(async () => { throw new Error('Unexpected generation'); });
+  for (const keywords of [undefined, [], [' '], ['x'.repeat(201)], Array(9).fill('x'), [12]]) {
+    await expect(instance.semantic.recall({ keywords })).rejects.toThrow('keywords');
+  }
+  const abort = new AbortController(); abort.abort();
+  await expect(instance.semantic.recall({ keywords: ['抱抱'] }, abort.signal)).rejects.toThrow();
 });
 it('caption jobs resume missing images, retain manual work, and persist failures for targeted retry', async () => {
   let fail = true;

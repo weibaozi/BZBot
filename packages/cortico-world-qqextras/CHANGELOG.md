@@ -1,5 +1,12 @@
 # `definition.ts` / `QqextrasWorld`
 
+## 0.4.0
+
+- Replace auxiliary query generation and selection with keyword vector retrieval and a final choice in the existing conversation.
+- Add an editable meme expression preset: decide whether to use a meme, emit a few keywords through the search tool, then choose a candidate or none using the current context.
+- Remove auxiliary model and copied-context settings; retain visual captioning, embedding settings, query caching and existing pack/index data.
+- Replace `qqextras_choose_meme` with `qqextras_search_memes(keywords)`. Existing prompt overrides need the new tool flow; retired auxiliary settings are ignored.
+
 ## 0.3.1
 
 - Separate embedded panel styles from the upstream full-page layout.

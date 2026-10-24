@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { generateHttp } from '../server/models.ts';
 import { PNG } from './helpers.ts';
 
-it('auxiliary HTTP requests use JSON data and image content without forcing model temperature', async () => {
+it('caption HTTP requests use JSON data and image content without forcing model temperature', async () => {
   const requests: Array<Record<string, any>> = [];
   let invalid = false;
   const server = createServer(async (req, res) => {

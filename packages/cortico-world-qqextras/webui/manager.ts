@@ -28,7 +28,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
   };
   const field = (label: string, value = '', multi = false) => { const wrapper = h('label', label, 'port-field'); const input = multi ? h('textarea') : h('input'); input.value = value; input.setAttribute('aria-label', label); wrapper.append(input); return { wrapper, input }; };
   const header = h('header', '', 'page-header'); const title = h('div', '', 'page-title-block');
-  title.append(h('p', 'Meme Pack Manager', 'eyebrow'), h('h1', '表情包管理'), h('p', '管理图片、整理语义、配置辅助选图。', 'page-subtitle'));
+  title.append(h('p', 'Meme Pack Manager', 'eyebrow'), h('h1', '表情包管理'), h('p', '管理图片、整理语义、配置向量召回。', 'page-subtitle'));
   header.append(title, button('刷新', async () => { await reload(); await refreshJob(); }));
   const tabs = h('nav', '', 'port-tabs'); tabs.setAttribute('aria-label', '表情管理页签');
   const packSelect = h('select'); packSelect.setAttribute('aria-label', '当前管理包');
@@ -49,13 +49,13 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
   const selectionCount = h('span'); const moveSelect = h('select'); moveSelect.setAttribute('aria-label', '移动到分类');
   const grid = h('div', '', 'port-sections'); const pager = h('div', '', 'port-pager'); main.append(toolbar, categoryActions, description, batch, grid, pager); layout.append(directory, main);
   const settingsPanel = h('section', '', 'port-settings'); const workflow = h('div', '', 'port-workflow'); const settingsBody = h('div');
-  settingsPanel.append(h('h2', '设置中心 · 模式'), h('p', '辅助模型语义搜索', 'port-mode'), workflow,
-    h('p', '准备回复 → 辅助模型提炼检索词 → 向量召回 → 辅助模型选图或放弃 → 当前渠道发送。', 'hint'), settingsBody);
-  const testArea = h('section', '', 'port-retrieval'); const testReply = field('选图测试：准备发送的回复', '', true); const testOutput = h('pre');
-  testArea.append(testReply.wrapper, button('测试辅助模型选图', async () => {
-    testOutput.textContent = '正在生成检索词并选图…';
-    try { testOutput.textContent = JSON.stringify(await ctx.invoke('choose', [{ reply: testReply.input.value }]), null, 2); } catch (e) { testOutput.textContent = String(e); }
-  }), h('p', '只展示候选和结果，不向任何渠道发送消息。', 'hint'), testOutput); semantic.append(testArea);
+  settingsPanel.append(h('h2', '设置中心 · 模式'), h('p', '向量召回 · 主模型选图', 'port-mode'), workflow,
+    h('p', '主模型按表情预设判断是否配图 → 给出关键词 → 向量召回 → 在当前对话中选图或放弃 → 当前渠道发送。', 'hint'), h('p', '表情使用预设模板可在系统提示词页面编辑。当前会话和人设直接复用，无需配置参考轮数。', 'hint'), settingsBody);
+  const testArea = h('section', '', 'port-retrieval'); const testReply = field('召回测试：关键词（逗号分隔）', '', true); const testOutput = h('pre');
+  testArea.append(testReply.wrapper, button('测试向量召回', async () => {
+    testOutput.textContent = '正在召回候选…';
+    try { testOutput.textContent = JSON.stringify(await ctx.invoke('search', [{ keywords: testReply.input.value.split(/[,，、\n]+/).map(word => word.trim()).filter(Boolean) }]), null, 2); } catch (e) { testOutput.textContent = String(e); }
+  }), h('p', '此处只测试候选召回；最终选图由主模型在实际对话中完成。', 'hint'), testOutput); semantic.append(testArea);
   app.append(header, tabs, report, packRow, managerActions, semantic, layout, settingsPanel);
 
   let packs: Pack[] = []; let packId = ''; let category = ''; let offset = 0; let trash = false; let tab = 'manage';
@@ -195,7 +195,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
 
   async function loadSettings() {
     const settings = await ctx.invoke<Settings>('settings'); settingsBody.replaceChildren(); workflow.replaceChildren(); const inputs = new Map<string, HTMLInputElement>();
-    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'probability', 'maxMemes']], ['辅助模型', ['auxiliaryUrl', 'auxiliaryModel', 'contextTurns', 'injectPersona', 'timeoutSeconds']], ['语义检索', ['embeddingUrl', 'embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['visionUrl', 'visionModel']], ['导入导出', ['pythonFile']]];
+    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'probability', 'maxMemes']], ['语义检索', ['embeddingUrl', 'embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['visionUrl', 'visionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
     for (const [title, keys] of groups) {
       const section = h('section', '', 'port-settings-group'); section.append(h('h3', title)); workflow.append(button(title, async () => { section.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 'ghost'));
       for (const key of keys) {
@@ -205,7 +205,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
         if (schema.minimum !== undefined) input.min = String(schema.minimum); if (schema.maximum !== undefined) input.max = String(schema.maximum); if (schema.type === 'number') input.step = '0.01';
         input.addEventListener('input', () => { dirtySettings = true; }, { signal }); label.append(input); section.append(label); inputs.set(path, input);
       }
-      const kind = title === '辅助模型' ? 'auxiliary' : title === '视觉标注' ? 'vision' : title === '语义检索' ? 'embedding' : '';
+      const kind = title === '视觉标注' ? 'vision' : title === '语义检索' ? 'embedding' : '';
       if (kind) { const secret = h('input'); secret.type = 'password'; secret.autocomplete = 'new-password'; secret.placeholder = settings.keys[kind] ? '密钥已配置；输入新值可替换' : 'API Key（本地无鉴权服务可留空）'; secret.setAttribute('aria-label', `${title} API Key`);
         section.append(secret, button('保存密钥', async () => { await ctx.invoke('key', [{ kind, key: secret.value }]); secret.value = ''; secret.placeholder = '密钥已配置'; report.textContent = '密钥已保存'; })); }
       settingsBody.append(section);

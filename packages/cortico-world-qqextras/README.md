@@ -1,6 +1,6 @@
-# `definition.ts` / `QqextrasWorld`：表情包管理与辅助选图
+# `definition.ts` / `QqextrasWorld`：表情包管理与向量召回
 
-表情包管理、语义化和设置中心通过一个独立 World 提供。运行模式为「辅助模型语义搜索」，QQ 关闭时也可使用。为兼容已有部署，保留包名 `cortico-world-qqextras`、World id `qqextras`、`worlds.qqextras.memes` 配置和 `qqextras/memes/` 数据目录。
+表情包管理、语义化和设置中心通过一个独立 World 提供。运行模式为「向量召回 · 主模型选图」，QQ 关闭时也可使用。为兼容已有部署，保留包名 `cortico-world-qqextras`、World id `qqextras`、`worlds.qqextras.memes` 配置和 `qqextras/memes/` 数据目录。
 
 ## 管理
 
@@ -25,18 +25,22 @@
 
 ## 设置中心与运行
 
-模式页提供配图开关、概率、每次选图上限 0/1、参考对话轮数、人设摘要开关、辅助模型、视觉模型、embedding、候选数、最低相似度、超时和导入程序设置。字段来自同一份 ConfigGroup，保存走 Cortico 配置校验与热更新。三类密钥分别存入部署 `.env` 的 `CORTICO_MEME_AUXILIARY_KEY`、`CORTICO_MEME_VISION_KEY`、`CORTICO_MEME_EMBEDDING_KEY`；界面只返回是否配置，不回显密钥。
+模式页提供配图开关、概率、每次配图上限 0/1、视觉模型、embedding、候选数、最低相似度、视觉超时和导入程序设置。字段来自同一份 ConfigGroup，保存走 Cortico 配置校验与热更新。密钥分别存入部署 `.env` 的 `CORTICO_MEME_VISION_KEY`、`CORTICO_MEME_EMBEDDING_KEY`；界面只返回是否配置，不回显密钥。
 
-辅助模型与视觉模型使用 OpenAI 兼容 `/chat/completions` 地址和模型名；embedding 使用 `/embeddings`。此扩展不会自动借用主模型的登录凭据。模型温度使用服务默认值。bge-small-zh 的查询前缀须与服务器预处理约定一致，避免重复添加。
+`ENV_PROMPT.md` 是可编辑的表情使用预设模板：主模型在准备回复时结合当前 session 中的人设、对话与收件人偏好，决定是否配图。要配图时调用 `qqextras_search_memes({keywords: ["安慰对方", "温柔抱抱", "陪伴"]})`，给出 1–8 个短词或短语。工具只进行一次查询 embedding 和向量召回，按候选数与最低相似度返回 id、描述、标签、配字和相似度；不调用辅助模型，不做最终选择。概率未命中或没有候选时返回原因。
 
-主模型准备好回复后，按需调用 `qqextras_choose_meme(reply, context?, persona?)`。辅助模型第一次调用生成检索词，向量召回后，第二次调用选择候选或放弃。只有当前启用的包参与检索；概率未命中或没有候选时提前结束。`context` 是主模型显式提供的当前对话参考，按配置截取最近轮数，并非直接读取整个主 session。图片描述、上下文和候选作为数据追加到模型请求末尾，不改写主 session 前缀。
+候选通过普通工具回执追加到同一个 session，主模型复用已有上下文判断选一张或不选，无需复制聊天历史、人设或启动另一个模型会话。相似度只用于召回，主模型可以选择较低排名的候选。动态候选不进入系统前缀；编辑预设模板后，按 Cortico 的提示词加载流程生效，立即重载前缀会损失一次缓存。
 
 选中后 `qqextras_get_meme` 返回工具图片附件和 `log:` 句柄，主模型再调用当前渠道的发送工具。QQ 使用既有 draft/confirm；控制台图片发送由 `patches/cortico/0003-console-image-attachments.patch` 提供。其他渠道需自身支持图片附件。不会拦截或改写所有消息，也不会把没有发送的图片报告为已发送。
 
-查询向量缓存最多 128 条。测试选图显示检索词、候选、选择结果及 query/embedding/search/select 耗时，不发送消息。模型地址、名称或查询前缀改变后需建立匹配索引。
+视觉标注仍使用 OpenAI 兼容 `/chat/completions`，只在生成图片语义时调用；embedding 使用 `/embeddings`，不借用主模型登录凭据。模型温度使用服务默认值。查询向量缓存最多 128 条；bge-small-zh 的查询前缀须与服务器预处理约定一致。模型地址、名称或查询前缀改变后需建立匹配索引。管理页测试和会话工具使用同一召回方法，显示候选与 embedding/search 耗时，不执行主模型选图、不发送消息。
+
+### 从 0.3.x 升级
+
+重启扩展以加载新工具声明；`qqextras_choose_meme(reply, context?, persona?)` 替换为 `qqextras_search_memes(keywords)`。已保存的 `auxiliaryUrl`、`auxiliaryModel`、`contextTurns`、`injectPersona` 及辅助模型密钥不再使用，可自行清理；图片、语义和向量索引继续复用。`timeoutSeconds` 现在只控制视觉标注。若部署已有 `prompts/QQEXTRAS.md` 自定义覆盖，将其中的旧选图流程更新为本包 `ENV_PROMPT.md` 的关键词召回流程，保留自定义配图偏好。
 
 ## 验证与来源
 
 `pnpm test` 使用临时目录、真实 ZIP、本机 HTTP/OneBot 服务和真实事件库，只有 LLM/embedding 使用脚本响应。`pnpm run typecheck`、`pnpm run typecheck:web` 检查类型。`pnpm run build:web` 在 bot 停止后构建面板。
 
-界面样式、导入格式和辅助语义流程参考 MIT 授权的 [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)，版本 `88b8a1b`，许可保留在 `webui/upstream/LICENSE`。本扩展不执行 AstrBot 插件，不包含资源广场、自动收集和云同步。图片许可沿用资源包声明。
+界面样式、导入格式和图片标注流程参考 MIT 授权的 [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)，版本 `88b8a1b`，许可保留在 `webui/upstream/LICENSE`。本扩展不执行 AstrBot 插件，不包含资源广场、自动收集和云同步。图片许可沿用资源包声明。
