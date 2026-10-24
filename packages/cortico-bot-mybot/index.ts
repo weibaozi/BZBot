@@ -16,8 +16,8 @@ export const BOT_ID = 'mybot';
 const definition: BotDefinition<BotConfig> = {
   ...soulmate,
   id: BOT_ID,
-  build(loaded, worlds): BotParts<BotConfig> {
-    const parts = soulmate.build(loaded, worlds);
+  build(loaded, worlds, services): BotParts<BotConfig> {
+    const parts = soulmate.build(loaded, worlds, services);
     const persona = parts.persona as CortiSoulmate;
     let core: Core<CoreConfig> | null = null;
     const deps = {

@@ -1,0 +1,666 @@
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 404842c..2d3c5f7 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -54,7 +54,7 @@ WebUI 按 schema 渲染表单。owner 是 `core`、`persona`、`world:<id>` 或
+ |---|---|
+ | `x-hot` | `false`:改动要等所属实例重新构造才生效,前端标「重启生效」。省略或 `true`:读取方每次现读,保存后立即生效。Core 组每一项都是热改;World 的读法见 [worlds.md](worlds.md) |
+ | `x-scale`、`x-suffix` | 显示倍率与单位 |
+-| `x-options` | 下拉项 |
++| `x-options` | 下拉项。`models:<类型>`(`chat` / `embedding` / `rerank` / `stt` / `tts`)列出模型中心里这一类型的模型引用,`models:chat:image` 只列接受图片输入的对话模型 |
+ | `x-path` | 用本机路径选择器填 |
+ | `x-download` | 附下载动作 |
+ 
+diff --git a/docs/personas.md b/docs/personas.md
+index d594255..034272d 100644
+--- a/docs/personas.md
++++ b/docs/personas.md
+@@ -56,7 +56,7 @@ Persona 工具,Core 只认 `ToolDef.endsTurn`。仓内 bot 的 Persona 工具声
+ | `memoryName` | 可选,Memory 页的标题 |
+ | `defaults()` | bot 默认配置,可包含 World 段。启动器用 `withWorlds()` 补充内建与扩展 World 中缺失的默认段,保留此处已有的段 |
+ | `declares` | 默认启用的 World id;未安装时显示为不可用。已安装但未声明的 World 默认关闭,部署可自行启用 |
+-| `build(loaded, worlds)` | 创建 Persona,返回 `BotParts { persona, worlds?, llm?, onStart?, onStop?, webUi? }` |
++| `build(loaded, worlds, services?)` | 创建 Persona,返回 `BotParts { persona, worlds?, llm?, onStart?, onStop?, webUi? }`;`services.models` 是模型中心(见 [providers.md](providers.md)「模型中心」) |
+ | `describe` | 可选,自描述:Persona 的全部工具与 Memory 的形式,见 [extensions.md](extensions.md)「自描述」 |
+ 
+ `createBot()` 的顺序:算提示词覆盖目录 → 定默认语言 → `WorldAssembly` → `build()` → `Core` →
+diff --git a/docs/providers.md b/docs/providers.md
+index 9bfeb9b..06af992 100644
+--- a/docs/providers.md
++++ b/docs/providers.md
+@@ -1,4 +1,4 @@
+-<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/openai-responses-compat/native.ts, src/providers/llamacpp/config.ts, src/providers/llamacpp/options.ts, src/providers/llamacpp/native.ts, src/providers/llamacpp/huggingface.ts, src/providers/transport/responses-input.ts, src/providers/pricebook.ts, src/core/generation.ts (PriceSnapshot, priceUsage) -->
++<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/model-hub.ts, src/providers/models.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/openai-responses-compat/native.ts, src/providers/llamacpp/config.ts, src/providers/llamacpp/options.ts, src/providers/llamacpp/native.ts, src/providers/llamacpp/huggingface.ts, src/providers/transport/responses-input.ts, src/providers/pricebook.ts, src/core/generation.ts (PriceSnapshot, priceUsage) -->
+ 
+ # Provider
+ 
+@@ -42,6 +42,20 @@ provider 模块不预设任何模型名;端点
+ WebUI 编辑供应商下的模型时只改参数：共用字段写回供应商，生成参数写回这个模型；改名与换模型不在这里做，
+ 删除只删这个模型，供应商与密钥保留。
+ 
++## 模型中心
++
++`src/providers/model-hub.ts` 定义 `ModelHub`,实现是 `src/providers/models.ts` 的 `ProviderModels`。World 从
++`WorldContext.models` 拿到它,bot 包从 `build()` 的 `services.models` 拿到。
++
++- `list(type?, { image? })`:启用、且协议模块的 `modelTypes`(缺省只有 `chat`)含这一类型的模型。
++- `chat(ref, context, { overrides?, signal?, role? })`:经端点表与 registry 的 `bind()` 调用,计价与来源照常附上;
++  `overrides` 只改这一次的生成参数。
++- `embed`、`rerank`、`transcribe`、`speak`:向供应商 `baseUrl` 的 `/embeddings`、`/rerank`、`/audio/transcriptions`、
++  `/audio/speech` 发 OpenAI 兼容请求,带供应商的密钥和 `options.extraHeaders`;模型名取 `spec.model`,缺省为模型 id。
++
++密钥只在模型中心里读。模型中心不记用量:World 用 `generationUsage(generation)` 换成 `host.reportUsage` 的参数自己上报。
++配置项写 `x-options: models:<类型>` 让操作者从模型中心选,存的是模型引用。
++
+ ## WebUI
+ 
+ 新建端点的生成配置默认最大输出 8192 token、上下文上限 1,000,000 token，温度留空，使用模型默认值；
+diff --git a/docs/worlds.md b/docs/worlds.md
+index c46f6d1..5498b76 100644
+--- a/docs/worlds.md
++++ b/docs/worlds.md
+@@ -76,7 +76,7 @@ World 应通过事件报告服务器起停、存档切换、连接变化等状
+ `enabled` 应为 false)、`preflight?`、`configOptions?`、`create(ctx)`、`describe?`(自描述,见下)。
+ `WorldContext` 向 `create` 提供:`cfg`(共享配置对象)、`timezone`、`botName`、`botDir` /
+ `packageDir` / `dataDir` / `repoRoot`、`secret()` / `storeSecret()`、`persist()`(写回
+-`worlds.<id>`)、`restart()`。界面语言不在其中:它是每个请求的属性,`webUi(language)` 与
++`worlds.<id>`)、`restart()`、`models`(部署根 `providers/` 的模型中心,见 [providers.md](providers.md)「模型中心」)。界面语言不在其中:它是每个请求的属性,`webUi(language)` 与
+ `configOptions(kind, language)` 每次传入(见 [webui.md](webui.md))。WebUI 里的 World 名取
+ `webUi(language).label`,没有时取定义的 `label`,两者都按请求现读。
+ 
+diff --git a/src/bot.ts b/src/bot.ts
+index b17e3fd..432a804 100644
+--- a/src/bot.ts
++++ b/src/bot.ts
+@@ -39,6 +39,8 @@ import { closeRun } from './core/run.ts';
+ import { ProviderHub } from './providers/webui/hub.ts';
+ import { ProviderSettings } from './providers/webui/settings.ts';
+ import { providerModules } from './providers/registry.ts';
++import { ProviderModels } from './providers/models.ts';
++import { modelOptions, type ModelHub } from './providers/model-hub.ts';
+ import { repoRoot } from './paths.ts';
+ import { isConfigGroup, readGroupValues, setByPath as setConfigPath } from './core/config-schema.ts';
+ import type { ConfigValues } from './core/config-schema.ts';
+@@ -75,8 +77,11 @@ export interface BotDefinition<C extends CoreConfig = CoreConfig> {
+   worlds?: readonly WorldDefinition<WorldSection>[];
+   /** 默认启用的 World id；缺失实现时显示不可用。对象声明可附缺失原因，未声明的 World 默认关闭。 */
+   declares?: readonly WorldDeclaration[];
+-  /** 配置已完成合并；worlds 与 Core 共用数组，激活和停用会就地更新，Persona 应在使用时读取。 */
+-  build(loaded: LoadedConfig<C>, worlds: World[]): BotParts<C>;
++  /**
++   * 配置已完成合并；worlds 与 Core 共用数组，激活和停用会就地更新，Persona 应在使用时读取。
++   * `services.models` 是部署根 `providers/` 的模型中心，在 Core 启动后可调用；干装载与测试可不给。
++   */
++  build(loaded: LoadedConfig<C>, worlds: World[], services?: BotServices): BotParts<C>;
+   /**
+    * 自描述,给人和扩展市场看:Persona 提供的全部工具与 Memory 的形式。默认启用的 World 取 `declares`,
+    * Memory 的名字取 `memoryName`;`pnpm describe:extension` 一并导出成 describe.json。
+@@ -98,6 +103,11 @@ export interface BotStartContext<C extends CoreConfig> {
+   port: number | null;
+ }
+ 
++/** 框架交给 bot 包 `build()` 的服务。 */
++export interface BotServices {
++  models: ModelHub;
++}
++
+ export interface BotParts<C extends CoreConfig = CoreConfig> {
+   persona: Persona;
+   /** 预建实例替换同 id 的定义实例，初始挂载；重启复用该实例，停用后不能通过 activate 重新挂载。 */
+@@ -874,8 +884,10 @@ export function createBot<C extends CoreConfig>(
+   // 默认语言用于 HTML 和未指定语言的请求。
+ 
+   const language = resolveLanguage(cfg.language);
+-  const assembly = new WorldAssembly(loaded, definition.worlds ?? [], definition.declares ?? []);
+-  const parts = definition.build(loaded, assembly.mounted);
++  // 模型中心惰性取 core.providers:World 与 Persona 在 Core 之前构造，调用发生在启动之后。
++  const models: ModelHub = new ProviderModels(loaded.providersDir ?? join(loaded.rootDir, 'providers'), () => core.providers);
++  const assembly = new WorldAssembly(loaded, definition.worlds ?? [], definition.declares ?? [], models);
++  const parts = definition.build(loaded, assembly.mounted, { models });
+   if (parts.worlds?.length) assembly.addPrebuilt(parts.worlds);
+   const contribution = parts.webUi ?? {};
+ 
+@@ -1019,6 +1031,8 @@ export function createBot<C extends CoreConfig>(
+         },
+ 
+         options: (kind, language) => {
++          const listed = modelOptions(models, kind);
++          if (listed) return listed;
+           const own = contribution.configOptions?.(kind, language);
+           if (own?.length) return own;
+           for (const def of definition.worlds ?? []) {
+diff --git a/src/extensions/dry-mount.ts b/src/extensions/dry-mount.ts
+index a867fd2..e3e2c73 100644
+--- a/src/extensions/dry-mount.ts
++++ b/src/extensions/dry-mount.ts
+@@ -18,6 +18,7 @@ import type { Language } from '../core/language.ts';
+ import type { BotDefinition } from '../bot.ts';
+ import type { WorldContext, WorldDefinition, WorldSection } from '../world.ts';
+ import type { ProviderModule } from '../providers/base.ts';
++import { NO_MODELS } from '../providers/model-hub.ts';
+ 
+ export interface DryMountReport {
+   ok: string[];
+@@ -93,6 +94,7 @@ export function fakeWorldContext<S extends WorldSection>(def: WorldDefinition<S>
+     storeSecret: () => {},
+     persist: (patch) => { Object.assign(cfg as object, patch); },
+     restart: async () => {},
++    models: NO_MODELS,
+   };
+ }
+ 
+diff --git a/src/providers/README.md b/src/providers/README.md
+index 08cb79c..fe1aa85 100644
+--- a/src/providers/README.md
++++ b/src/providers/README.md
+@@ -1,4 +1,4 @@
+-<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/transport/responses-input.ts, src/providers/transport/history.ts, src/providers/llamacpp/native.ts -->
++<!-- Owner: src/providers/base.ts, src/providers/store.ts, src/providers/model-hub.ts, src/providers/models.ts, src/providers/webui/hub.ts, src/providers/hub-api.ts, src/providers/name.ts, src/providers/registry.ts, src/providers/webui/settings.ts, src/providers/webui/config.ts, src/providers/openai-responses-compat/config.ts, src/providers/transport/responses-input.ts, src/providers/transport/history.ts, src/providers/llamacpp/native.ts -->
+ 
+ # src/providers
+ 
+@@ -13,6 +13,7 @@
+ | `base.ts` | 三个接口与 `BaseProvider`(抽象 `respond`) |
+ | `registry.ts` | 目录扫描发现内建模块、`registerProviderModules()` 收扩展、实例缓存与 `bind()` |
+ | `store.ts` | `providers/` 目录的读写:端点与供应商两种格式展开成端点表,写回名字所在的目录 |
++| `model-hub.ts` / `models.ts` | 模型中心:给 World 与 bot 包按模型引用列出、调用各类型模型 |
+ | `configuration.ts` | `validateSpec` / `validateEntry`:外部配置校验 |
+ | `pricebook.ts` | 价目定义、快照、报价合并 |
+ | `webui/` | provider 页的服务端:`ProviderSettings`(落盘、密钥、探活) |
+diff --git a/src/providers/base.ts b/src/providers/base.ts
+index bc12329..c297d93 100644
+--- a/src/providers/base.ts
++++ b/src/providers/base.ts
+@@ -14,6 +14,7 @@ import type { Request } from '../protocol/open-responses/index.ts';
+ import type { ContextRecord } from '../protocol/open-responses/context.ts';
+ import type { GenerateOptions, Generation, GenerationError, ResponseClient } from '../core/generation.ts';
+ import type { EffortPreset } from './effort-presets.ts';
++import type { ModelType } from './store.ts';
+ 
+ /** Providers expose standard Responses and own their native transport semantics. */
+ export abstract class BaseProvider implements ResponseClient {
+@@ -100,6 +101,8 @@ export interface ProviderModule {
+   description?: string;
+   /** 自描述,给人和扩展市场看。 */
+   describe?: ProviderDescribe;
++  /** 能调用的模型类型。缺省只有对话;其余类型由模型中心按 OpenAI 兼容路径直连 `baseUrl`(见 models.ts)。 */
++  modelTypes?: readonly ModelType[];
+   defaultBaseUrl?: string;
+   /** Candidate endpoint URLs offered on the URL field. Candidates only: any URL is accepted. */
+   baseUrlSuggestions?: readonly string[];
+diff --git a/src/providers/llamacpp/index.ts b/src/providers/llamacpp/index.ts
+index 4668b91..fe61ba6 100644
+--- a/src/providers/llamacpp/index.ts
++++ b/src/providers/llamacpp/index.ts
+@@ -23,6 +23,7 @@ const reasoningTiers = (language: Language): ReasoningTier[] => {
+ 
+ export default {
+   id: 'llamacpp',
++  modelTypes: ['chat', 'embedding', 'rerank'],
+   title: 'llama.cpp',
+   description: 'Connect to or manage local llama.cpp models.',
+   describe: { protocols: ['openai-chat'], auth: ['api-key'], local: true, input: ['text', 'image'] },
+diff --git a/src/providers/model-hub.ts b/src/providers/model-hub.ts
+new file mode 100644
+index 0000000..6fb284c
+--- /dev/null
++++ b/src/providers/model-hub.ts
+@@ -0,0 +1,70 @@
++/**
++ * 模型中心的接口,给 World 与 bot 包用;实现见 models.ts。
++ * 这里不加载 provider 模块,装配层可以只拿接口与 `NO_MODELS`。
++ */
++import type { LLMUsage, ModelSpec } from '../core/types.ts';
++import type { Charge, Generation } from '../core/generation.ts';
++import type { ContextRecord } from '../protocol/open-responses/context.ts';
++import { usageCounters } from '../protocol/open-responses/context-helpers.ts';
++import type { ModelType } from './store.ts';
++
++/** 可选用的模型。`multimodal` 是对话模型接受图片输入的开关。 */
++export interface ModelInfo {
++  ref: string;
++  source: string;
++  model: string;
++  type: ModelType;
++  multimodal: boolean;
++  contextWindow?: number;
++}
++
++export interface ModelHub {
++  /** 启用且协议模块支持其类型的模型;`image` 只留接受图片输入的对话模型。 */
++  list(type?: ModelType, filter?: { image?: boolean }): ModelInfo[];
++  /** 一次对话生成。`overrides` 只改这一次的生成参数,不改模型配置。 */
++  chat(ref: string, context: readonly ContextRecord[], options?: ChatOptions): Promise<Generation>;
++  /** 每段文本一个向量,顺序与输入一致。 */
++  embed(ref: string, texts: readonly string[], signal?: AbortSignal): Promise<number[][]>;
++  /** 按相关度从高到低,`index` 指向 `documents` 的下标。 */
++  rerank(ref: string, query: string, documents: readonly string[], signal?: AbortSignal): Promise<Array<{ index: number; score: number }>>;
++  transcribe(ref: string, audio: { bytes: Uint8Array; mime: string; name?: string }, signal?: AbortSignal): Promise<string>;
++  speak(ref: string, text: string, options?: { voice?: string; signal?: AbortSignal }): Promise<{ bytes: Uint8Array; mime: string }>;
++}
++
++export interface ChatOptions {
++  overrides?: Partial<Omit<ModelSpec, 'model'>>;
++  signal?: AbortSignal;
++  /** 记进用量与日志的调用方标签。 */
++  role?: string;
++}
++
++/** 一次对话生成按 `host.reportUsage` 的参数形状给出用量;没有计量时为 null。 */
++export function generationUsage(generation: Generation): { usage: LLMUsage; opts: { model: string; charges: Charge[] } } | null {
++  const attempt = generation.attempts.at(-1);
++  if (!attempt) return null;
++  return { usage: usageCounters(attempt.meters), opts: { model: generation.response.model, charges: attempt.charges ?? [] } };
++}
++
++/** 一次对话生成的输出文本,按输出顺序拼接。 */
++export function outputText(generation: Generation): string {
++  return generation.response.output.flatMap((item) => item.type === 'message'
++    ? item.content.flatMap((part) => part.type === 'output_text' ? [part.text] : [])
++    : []).join('');
++}
++
++/** `x-options` 的 `models:<类型>[:image]`:可选模型的引用表;不是这个前缀返回 null。 */
++export function modelOptions(hub: ModelHub, kind: string): Array<{ value: string; label: string }> | null {
++  const match = /^models:(chat|embedding|rerank|stt|tts)(:image)?$/.exec(kind);
++  if (!match) return null;
++  return hub.list(match[1] as ModelType, { image: Boolean(match[2]) }).map((m) => ({ value: m.ref, label: m.ref }));
++}
++
++/** 没有部署根的装配(干装载、单元测试)用的模型中心:没有模型,调用即报错。 */
++export const NO_MODELS: ModelHub = {
++  list: () => [],
++  chat: async (ref) => { throw new Error(`没有这个模型: ${ref}`); },
++  embed: async (ref) => { throw new Error(`没有这个模型: ${ref}`); },
++  rerank: async (ref) => { throw new Error(`没有这个模型: ${ref}`); },
++  transcribe: async (ref) => { throw new Error(`没有这个模型: ${ref}`); },
++  speak: async (ref) => { throw new Error(`没有这个模型: ${ref}`); },
++};
+diff --git a/src/providers/models.ts b/src/providers/models.ts
+new file mode 100644
+index 0000000..bf3a464
+--- /dev/null
++++ b/src/providers/models.ts
+@@ -0,0 +1,117 @@
++/**
++ * 模型中心:列出 `providers/` 下的全部模型,按模型引用调用。
++ * 对话模型经端点表与 registry 的 `bind()`,与主对话同一条路,计价与来源信息照常附上;
++ * 嵌入、重排序、语音转写与合成按 OpenAI 兼容路径直连供应商的 `baseUrl`。
++ * 密钥只在这里读,调用方拿不到。用量由调用方经自己的宿主上报(World 用 `host.reportUsage`,见 model-hub.ts 的 `generationUsage`)。
++ */
++import { join } from 'node:path';
++import type { ModelSpec } from '../core/types.ts';
++import type { GenerateOptions, Generation } from '../core/generation.ts';
++import { secretReader } from '../core/secrets.ts';
++import type { ContextRecord } from '../protocol/open-responses/context.ts';
++import { responseRequest } from '../protocol/open-responses/context-helpers.ts';
++import type { ProviderModule } from './base.ts';
++import { providerModules, type ProviderRegistry } from './registry.ts';
++import { readModels, type ModelType, type StoredModel } from './store.ts';
++import type { ChatOptions, ModelHub, ModelInfo } from './model-hub.ts';
++
++export class ProviderModels implements ModelHub {
++  constructor(
++    private readonly root: string,
++    /** 惰性取得:World 在 Core 之前构造,调用发生在启动之后。 */
++    private readonly registry: () => ProviderRegistry,
++    private readonly modules: readonly ProviderModule[] = providerModules,
++    private readonly fetchImpl: typeof fetch = fetch,
++  ) {}
++
++  private supported(model: StoredModel): boolean {
++    const module = this.modules.find((m) => m.id === model.entry.kind);
++    return !!module && (module.modelTypes ?? ['chat']).includes(model.type);
++  }
++
++  private find(ref: string, type: ModelType): StoredModel {
++    const model = readModels(this.root).find((m) => m.ref === ref);
++    if (!model) throw new Error(`没有这个模型: ${ref}`);
++    if (model.type !== type) throw new Error(`模型 ${ref} 的类型是 ${model.type},不是 ${type}`);
++    if (!model.enabled) throw new Error(`模型 ${ref} 已停用`);
++    if (!this.supported(model)) throw new Error(`供应商 ${model.source} 的协议模块不支持 ${type} 模型`);
++    return model;
++  }
++
++  list(type?: ModelType, filter: { image?: boolean } = {}): ModelInfo[] {
++    return readModels(this.root)
++      .filter((m) => m.enabled && this.supported(m) && (!type || m.type === type) && (!filter.image || (m.type === 'chat' && m.entry.multimodal === true)))
++      .map((m) => ({
++        ref: m.ref, source: m.source, model: m.model, type: m.type, multimodal: m.entry.multimodal === true,
++        ...(m.entry.spec?.contextWindow !== undefined ? { contextWindow: m.entry.spec.contextWindow } : {}),
++      }));
++  }
++
++  async chat(ref: string, context: readonly ContextRecord[], options: ChatOptions = {}): Promise<Generation> {
++    const model = this.find(ref, 'chat');
++    if (!model.entry.spec) throw new Error(`模型 ${ref} 还没有配置生成参数`);
++    const spec: ModelSpec = { ...model.entry.spec, ...options.overrides, model: model.entry.spec.model };
++    const generate: GenerateOptions = { nativeSpec: spec, ...(options.signal ? { signal: options.signal } : {}), ...(options.role ? { role: options.role } : {}) };
++    return this.registry().bind(ref).respond(responseRequest(spec, context), generate);
++  }
++
++  private headers(model: StoredModel, json: boolean): Record<string, string> {
++    const key = model.entry.secret ? secretReader(join(this.root, model.source, '.env'))(model.entry.secret) : '';
++    const extra = (model.entry.options as { extraHeaders?: Record<string, string> } | undefined)?.extraHeaders ?? {};
++    return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...extra, ...(key ? { Authorization: `Bearer ${key}` } : {}) };
++  }
++
++  private async post(model: StoredModel, path: string, body: string | FormData, json: boolean, signal?: AbortSignal): Promise<Response> {
++    const url = model.entry.baseUrl.replace(/\/+$/, '') + path;
++    const response = await this.fetchImpl(url, {
++      method: 'POST', headers: this.headers(model, json), body, redirect: 'error',
++      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
++    });
++    if (!response.ok) throw new Error(`${model.ref} ${path} 请求失败 (HTTP ${response.status})`);
++    return response;
++  }
++
++  private modelName(model: StoredModel): string {
++    return model.entry.spec?.model || model.model;
++  }
++
++  async embed(ref: string, texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
++    const model = this.find(ref, 'embedding');
++    const response = await this.post(model, '/embeddings', JSON.stringify({ model: this.modelName(model), input: texts, encoding_format: 'float' }), true, signal);
++    const body = await response.json() as { data?: Array<{ index: number; embedding: number[] }> };
++    const data = body.data?.slice().sort((a, b) => a.index - b.index);
++    if (!data || data.length !== texts.length || data.some((d, i) => d.index !== i || !Array.isArray(d.embedding)))
++      throw new Error(`${ref} 返回的向量与输入条数不一致`);
++    return data.map((d) => d.embedding);
++  }
++
++  async rerank(ref: string, query: string, documents: readonly string[], signal?: AbortSignal): Promise<Array<{ index: number; score: number }>> {
++    const model = this.find(ref, 'rerank');
++    const response = await this.post(model, '/rerank', JSON.stringify({ model: this.modelName(model), query, documents }), true, signal);
++    const body = await response.json() as { results?: Array<{ index: number; relevance_score: number }> };
++    if (!Array.isArray(body.results) || body.results.some((r) => !Number.isInteger(r.index) || r.index < 0 || r.index >= documents.length || typeof r.relevance_score !== 'number'))
++      throw new Error(`${ref} 返回的重排序结果无效`);
++    return body.results.map((r) => ({ index: r.index, score: r.relevance_score })).sort((a, b) => b.score - a.score);
++  }
++
++  async transcribe(ref: string, audio: { bytes: Uint8Array; mime: string; name?: string }, signal?: AbortSignal): Promise<string> {
++    const model = this.find(ref, 'stt');
++    const form = new FormData();
++    form.append('model', this.modelName(model));
++    form.append('file', new Blob([new Uint8Array(audio.bytes)], { type: audio.mime }), audio.name ?? 'audio');
++    const response = await this.post(model, '/audio/transcriptions', form, false, signal);
++    const body = await response.json() as { text?: unknown };
++    if (typeof body.text !== 'string') throw new Error(`${ref} 没有返回转写文本`);
++    return body.text;
++  }
++
++  async speak(ref: string, text: string, options: { voice?: string; signal?: AbortSignal } = {}): Promise<{ bytes: Uint8Array; mime: string }> {
++    const model = this.find(ref, 'tts');
++    const response = await this.post(model, '/audio/speech',
++      JSON.stringify({ model: this.modelName(model), input: text, ...(options.voice ? { voice: options.voice } : {}) }), true, options.signal);
++    return { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('content-type')?.split(';')[0] || 'audio/mpeg' };
++  }
++}
++
++/** 非对话模型单次请求的上限;语音合成与长文本嵌入在本机服务上可能要十几秒。 */
++const REQUEST_TIMEOUT_MS = 60_000;
+diff --git a/src/providers/openai-responses-compat/index.ts b/src/providers/openai-responses-compat/index.ts
+index 6db9a68..49c6884 100644
+--- a/src/providers/openai-responses-compat/index.ts
++++ b/src/providers/openai-responses-compat/index.ts
+@@ -57,6 +57,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
+ 
+ export default {
+   id: 'openai-responses-compat',
++  modelTypes: ['chat', 'embedding', 'rerank', 'stt', 'tts'],
+   title: 'OpenAI Responses Compatible',
+   description: 'Connect to Responses-compatible model services.',
+   describe: { protocols: ['openai-responses'], auth: ['api-key'], local: false, input: ['text', 'image'] },
+diff --git a/src/providers/store.ts b/src/providers/store.ts
+index 0e1b218..f58a1e3 100644
+--- a/src/providers/store.ts
++++ b/src/providers/store.ts
+@@ -78,6 +78,36 @@ export function readProviders(root: string): Record<string, LLMProviderEntry> {
+   return table;
+ }
+ 
++/** 目录里的一个模型,含非对话与停用的模型。`entry` 是调用它所需的供应商字段加这个模型的字段。 */
++export interface StoredModel {
++  ref: string;
++  source: string;
++  model: string;
++  type: ModelType;
++  enabled: boolean;
++  entry: LLMProviderEntry;
++}
++
++/** 列出整个目录的模型。旧格式端点算一个对话模型,引用是目录名。 */
++export function readModels(root: string): StoredModel[] {
++  const list: StoredModel[] = [];
++  for (const source of sourceDirs(root)) {
++    const raw = readConfig(root, source);
++    if (!isProviderSource(raw)) {
++      const entry = raw as LLMProviderEntry;
++      list.push({ ref: source, source, model: entry.spec?.model ?? '', type: 'chat', enabled: true, entry });
++      continue;
++    }
++    const { models, ...shared } = raw;
++    for (const [id, model] of Object.entries(models)) {
++      const { type = 'chat', enabled = true, ...fields } = structuredClone(model);
++      if (fields.spec && !fields.spec.model) fields.spec.model = id;
++      list.push({ ref: modelRef(source, id), source, model: id, type, enabled, entry: { ...structuredClone(shared), ...fields } });
++    }
++  }
++  return list;
++}
++
+ /** 名字所在的目录:旧格式是端点目录,模型引用是供应商目录。 */
+ export function entryDir(root: string, name: string): string {
+   return join(root, sourceOf(name));
+diff --git a/src/world.ts b/src/world.ts
+index c5bfdda..93c87c7 100644
+--- a/src/world.ts
++++ b/src/world.ts
+@@ -13,6 +13,7 @@ import type { BotDefinition } from './bot.ts';
+ import { updateJsonObject, writeSecretFile } from './config-file.ts';
+ import type { Language } from './core/language.ts';
+ import { assemblyText as text } from './strings.ts';
++import { NO_MODELS, type ModelHub } from './providers/model-hub.ts';
+ 
+ /** 每个 World 配置段的最小形状。 */
+ export interface WorldSection {
+@@ -45,6 +46,8 @@ export interface WorldContext<S extends WorldSection = WorldSection> {
+   persist(patch: DeepPartial<S>): void;
+   /** 按 cfg.enabled 同步状态：启用时激活或重启，禁用时停止。 */
+   restart(): Promise<void>;
++  /** 部署根 `providers/` 下的模型，按模型引用调用；配置项用 `x-options: models:<类型>` 让操作者选。 */
++  readonly models: ModelHub;
+ }
+ 
+ export interface WorldDefinition<S extends WorldSection = WorldSection> {
+@@ -209,6 +212,7 @@ export class WorldAssembly {
+     private readonly loaded: LoadedConfig<CoreConfig>,
+     private readonly worlds: readonly WorldDefinition<WorldSection>[],
+     declares: readonly WorldDeclaration[],
++    private readonly models: ModelHub = NO_MODELS,
+   ) {
+     this.cfgPath = join(loaded.rootDir, 'config.json');
+     const declared = new Set<string>();
+@@ -470,6 +474,7 @@ export class WorldAssembly {
+       },
+       persist: (patch) => this.persist(def.id, patch as Record<string, unknown>),
+       restart: () => this.sync(def.id),
++      models: this.models,
+     };
+   }
+ }
+diff --git a/tests/builtin-describe.test.ts b/tests/builtin-describe.test.ts
+index a631b68..dc5bfdd 100644
+--- a/tests/builtin-describe.test.ts
++++ b/tests/builtin-describe.test.ts
+@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
+ import type { BotDefinition } from '../src/bot.ts';
+ import type { CoreConfig } from '../src/core/types.ts';
+ import { loadDeployment } from '../src/deploy.ts';
++import { NO_MODELS } from '../src/providers/model-hub.ts';
+ import { providerModules } from '../src/providers/registry.ts';
+ import { withWorlds, type WorldContext, type WorldDefinition, type WorldSection } from '../src/world.ts';
+ import { loadBuiltinWorlds } from '../src/worlds/index.ts';
+@@ -46,6 +47,7 @@ function context(def: WorldDefinition<WorldSection>, cfg: WorldSection): WorldCo
+     storeSecret: () => {},
+     persist: () => {},
+     restart: async () => {},
++    models: NO_MODELS,
+   };
+ }
+ 
+diff --git a/tests/providers/models.test.ts b/tests/providers/models.test.ts
+new file mode 100644
+index 0000000..ba1a561
+--- /dev/null
++++ b/tests/providers/models.test.ts
+@@ -0,0 +1,149 @@
++/** 模型中心按模型引用调用:对话经 registry,其余类型直连供应商地址,密钥取自供应商目录。 */
++import { afterEach, expect, it } from 'vitest';
++import { createServer, type IncomingMessage } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { makeCfg, makeTmpDir } from '../core/helpers.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import type { Generation, GenerateOptions } from '../../src/core/generation.ts';
++import type { Request } from '../../src/protocol/open-responses/index.ts';
++import { message } from '../../src/protocol/open-responses/context.ts';
++import { BaseProvider, type ProviderModule } from '../../src/providers/base.ts';
++import { ProviderRegistry } from '../../src/providers/registry.ts';
++import { readProviders } from '../../src/providers/store.ts';
++import { ProviderModels } from '../../src/providers/models.ts';
++import { generationUsage, modelOptions, outputText } from '../../src/providers/model-hub.ts';
++import { WorldAssembly, type WorldContext, type WorldDefinition } from '../../src/world.ts';
++import { loadDeployment } from '../../src/deploy.ts';
++
++const cleanups: Array<() => void | Promise<void>> = [];
++afterEach(async () => { for (const fn of cleanups.splice(0)) await fn(); });
++
++/** 脚本化的对话模型:记下请求,回一句固定文本与计量。 */
++const requests: Array<{ request: Request; options?: GenerateOptions }> = [];
++class ScriptedClient extends BaseProvider {
++  async respond(request: Request, options?: GenerateOptions): Promise<Generation> {
++    requests.push({ request, options });
++    return {
++      response: { model: request.model, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'caption' }] }] },
++      origin: { instance: '', module: 'scripted', model: request.model ?? '' },
++      attempts: [{ meters: { input: 12, output: 3, total: 15, cachedInput: 4, uncachedInput: 8, reasoning: null }, charges: [] }],
++    } as unknown as Generation;
++  }
++}
++const scripted: ProviderModule = {
++  id: 'scripted', title: 'Scripted', reasoningTiers: [], serviceTiers: [], modelTypes: ['chat', 'embedding', 'rerank', 'stt', 'tts'],
++  create: () => ({ client: new ScriptedClient() }),
++};
++const chatOnly: ProviderModule = { ...scripted, id: 'chat-only', modelTypes: undefined };
++
++/** 本机 HTTP 服务:按路径回 OpenAI 兼容的响应,记下收到的头与正文。 */
++async function service() {
++  const seen: Array<{ path: string; headers: IncomingMessage['headers']; body: string }> = [];
++  const server = createServer((req, res) => {
++    const chunks: Buffer[] = [];
++    req.on('data', (c: Buffer) => chunks.push(c));
++    req.on('end', () => {
++      const body = Buffer.concat(chunks).toString('utf8');
++      seen.push({ path: req.url ?? '', headers: req.headers, body });
++      const json = (value: unknown) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
++      if (req.url === '/v1/embeddings') {
++        const input = (JSON.parse(body) as { input: string[] }).input;
++        return json({ data: input.map((text, index) => ({ index, embedding: [text.length, index] })).reverse() });
++      }
++      if (req.url === '/v1/rerank') return json({ results: [{ index: 0, relevance_score: 0.1 }, { index: 1, relevance_score: 0.9 }] });
++      if (req.url === '/v1/audio/transcriptions') return json({ text: '你好' });
++      if (req.url === '/v1/audio/speech') { res.setHeader('Content-Type', 'audio/wav'); return res.end(Buffer.from('RIFF')); }
++      res.statusCode = 404; res.end();
++    });
++  });
++  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
++  cleanups.push(() => new Promise<void>((done) => server.close(() => done())));
++  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen };
++}
++
++async function fixture() {
++  requests.splice(0);
++  const { url, seen } = await service();
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const root = join(temp.dir, 'providers');
++  const write = (name: string, config: unknown, env?: string) => {
++    mkdirSync(join(root, name), { recursive: true });
++    writeFileSync(join(root, name, 'config.json'), JSON.stringify(config));
++    if (env) writeFileSync(join(root, name, '.env'), env);
++  };
++  write('local', {
++    kind: 'scripted', baseUrl: url, secret: 'CORTICO_KEY_LOCAL', options: { extraHeaders: { 'X-Gateway': 'g1' } },
++    models: {
++      vision: { type: 'chat', multimodal: true, spec: { model: 'vision', thinking: true, temperature: 0.7, maxTokens: 8192 } },
++      text: { type: 'chat', spec: { model: 'text', thinking: false } },
++      'bge-m3': { type: 'embedding' },
++      old: { type: 'embedding', enabled: false },
++      rank: { type: 'rerank', spec: { model: 'bge-reranker', thinking: false } },
++      whisper: { type: 'stt' },
++      voice: { type: 'tts' },
++    },
++  }, 'CORTICO_KEY_LOCAL=local-key\n');
++  write('limited', { kind: 'chat-only', baseUrl: url, models: { chat: { spec: { model: 'chat', thinking: false } }, vec: { type: 'embedding' } } });
++  const cfg = makeCfg({ providers: readProviders(root), activeProvider: 'local/text' });
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() }, [scripted, chatOnly]);
++  return { hub: new ProviderModels(root, () => registry, [scripted, chatOnly]), seen, root, temp };
++}
++
++it('lists enabled models whose type the module supports, filtered by type and image input', async () => {
++  const { hub } = await fixture();
++  expect(hub.list().map(m => m.ref)).toEqual(['limited/chat', 'local/vision', 'local/text', 'local/bge-m3', 'local/rank', 'local/whisper', 'local/voice']);
++  expect(hub.list('embedding').map(m => m.ref)).toEqual(['local/bge-m3']);
++  expect(hub.list('chat', { image: true }).map(m => m.ref)).toEqual(['local/vision']);
++  expect(modelOptions(hub, 'models:chat:image')).toEqual([{ value: 'local/vision', label: 'local/vision' }]);
++  expect(modelOptions(hub, 'models:embedding')).toEqual([{ value: 'local/bge-m3', label: 'local/bge-m3' }]);
++  expect(modelOptions(hub, 'persona-kind')).toBeNull();
++});
++
++it('chats through the registry with one-call overrides and leaves the model configuration alone', async () => {
++  const { hub, root } = await fixture();
++  const generation = await hub.chat('local/vision', [message('user', 'describe')], { overrides: { thinking: false, maxTokens: 1024 }, role: 'memes' });
++  expect(outputText(generation)).toBe('caption');
++  expect(generationUsage(generation)).toEqual({ usage: { promptTokens: 12, completionTokens: 3, cacheHitTokens: 4, cacheMissTokens: 8, reasoningTokens: undefined }, opts: { model: 'vision', charges: [] } });
++  const [{ request, options }] = requests;
++  expect(request).toMatchObject({ model: 'vision', reasoning: { effort: 'none' }, temperature: 0.7, max_output_tokens: 1024 });
++  expect(options).toMatchObject({ role: 'memes', nativeSpec: { model: 'vision', thinking: false, temperature: 0.7, maxTokens: 1024 } });
++  expect(readProviders(root)['local/vision'].spec).toEqual({ model: 'vision', thinking: true, temperature: 0.7, maxTokens: 8192 });
++});
++
++it('calls embedding, rerank, transcription and speech endpoints with the source key and headers', async () => {
++  const { hub, seen } = await fixture();
++  expect(await hub.embed('local/bge-m3', ['a', 'bbb'])).toEqual([[1, 0], [3, 1]]);
++  expect(await hub.rerank('local/rank', 'q', ['x', 'y'])).toEqual([{ index: 1, score: 0.9 }, { index: 0, score: 0.1 }]);
++  expect(await hub.transcribe('local/whisper', { bytes: new Uint8Array([1, 2]), mime: 'audio/wav', name: 'clip.wav' })).toBe('你好');
++  const spoken = await hub.speak('local/voice', '晚安', { voice: 'alloy' });
++  expect([Buffer.from(spoken.bytes).toString(), spoken.mime]).toEqual(['RIFF', 'audio/wav']);
++  expect(seen.map(s => s.path)).toEqual(['/v1/embeddings', '/v1/rerank', '/v1/audio/transcriptions', '/v1/audio/speech']);
++  for (const request of seen) expect([request.headers.authorization, request.headers['x-gateway']]).toEqual(['Bearer local-key', 'g1']);
++  expect(JSON.parse(seen[0].body)).toEqual({ model: 'bge-m3', input: ['a', 'bbb'], encoding_format: 'float' });
++  expect(JSON.parse(seen[1].body).model).toBe('bge-reranker');
++  expect(seen[2].body).toContain('name="model"\r\n\r\nwhisper');
++  expect(JSON.parse(seen[3].body)).toEqual({ model: 'voice', input: '晚安', voice: 'alloy' });
++});
++
++it('refuses missing, disabled, mistyped and unsupported models before any request', async () => {
++  const { hub, seen } = await fixture();
++  await expect(hub.embed('local/absent', ['a'])).rejects.toThrow('没有这个模型');
++  await expect(hub.embed('local/old', ['a'])).rejects.toThrow('已停用');
++  await expect(hub.embed('local/text', ['a'])).rejects.toThrow('类型是 chat');
++  await expect(hub.embed('limited/vec', ['a'])).rejects.toThrow('不支持 embedding');
++  expect(seen).toEqual([]);
++});
++
++it('hands every World the deployment model hub', async () => {
++  const { hub, temp } = await fixture();
++  const seenContexts: WorldContext[] = [];
++  const def: WorldDefinition = {
++    id: 'probe', label: 'Probe', defaults: () => ({ enabled: false }),
++    create: (ctx) => { seenContexts.push(ctx); return { id: 'probe', tools: () => [], envPromptVars: () => null, start: async () => {}, stop: async () => {} }; },
++  };
++  const loaded = loadDeployment({ defaults: () => makeCfg() }, temp.dir, temp.dir);
++  new WorldAssembly(loaded, [def], [], hub);
++  expect(seenContexts[0].models.list('embedding').map(m => m.ref)).toEqual(['local/bge-m3']);
++});
