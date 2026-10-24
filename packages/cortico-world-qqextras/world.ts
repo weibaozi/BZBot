@@ -72,6 +72,8 @@ export class QqextrasWorld implements World {
           return this.launch('import', () => this.library.importZip(path, this.ctx.cfg.memes.pythonFile, this.abort.signal));
         }
         if (method === 'build') return this.launch('build', () => this.search.build(this.abort.signal));
+        if (method === 'catalog') return this.library.catalog();
+        if (method === 'edit') return this.library.edit(arg);
         if (method === 'key') {
           if (typeof arg.key !== 'string' || !arg.key.trim()) throw new Error('Key cannot be empty');
           this.ctx.storeSecret('CORTICO_MEME_EMBEDDING_KEY', arg.key.trim()); return { saved: true };
@@ -82,8 +84,11 @@ export class QqextrasWorld implements World {
         }
         if (method === 'list') {
           const offset = typeof arg.offset === 'number' && Number.isInteger(arg.offset) && arg.offset >= 0 ? arg.offset : 0;
-          const entries = await this.library.entries();
-          return { total: entries.length, entries: entries.slice(offset, offset + 20).map(({ file, packId, ...entry }) => entry) };
+          const query = typeof arg.query === 'string' ? arg.query.toLowerCase().slice(0, 200) : '';
+          const entries = (await this.library.entries()).filter(e => (!arg.packId || e.packId === arg.packId)
+            && (!arg.category || e.category === arg.category)
+            && (!query || [e.category, e.caption, e.visibleText, ...e.tags].join(' ').toLowerCase().includes(query)));
+          return { total: entries.length, entries: entries.slice(offset, offset + 24).map(({ file, ...entry }) => entry) };
         }
         if (method === 'image') {
           if (typeof arg.id !== 'string') throw new Error('id must be a string');

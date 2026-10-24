@@ -60,3 +60,26 @@ it('returns a selected image as a tool attachment without claiming delivery and 
   cfg.memes.enabled = false;
   await expect(tool.handler({ id: entry.id }, { role: 'main', log: nullLogger() })).rejects.toThrow('disabled');
 });
+it('edits descriptions and tags atomically, rejects stale editors, and excludes stale vectors', async () => {
+  const { instance } = await setup(); await instance.search.build();
+  const pack = (await instance.library.catalog())[0];
+  const entry = (await instance.library.entries()).find(e => e.category === 'affection')!;
+  const change = { kind: 'image', packId: pack.id, revision: pack.revision, id: entry.id,
+    category: 'affection', caption: '新的安慰描述', visibleText: '抱抱', tags: ['陪伴', '温柔'] };
+  await instance.library.edit(change);
+  expect((await instance.library.image(entry.id)).bytes).toEqual(PNG);
+  expect((await instance.library.entries()).find(e => e.id === entry.id)).toMatchObject({ caption: change.caption, tags: change.tags });
+  await expect(instance.library.edit(change)).rejects.toThrow('Content changed');
+  expect((await instance.search.search('抱抱', 5)).candidates.some(c => c.id === entry.id)).toBe(false);
+});
+it('category descriptions update only that category and invalid edits leave data unchanged', async () => {
+  const { instance } = await setup(); const pack = (await instance.library.catalog())[0];
+  await instance.library.edit({ kind: 'category', packId: pack.id, revision: pack.revision, category: 'affection', description: '温柔陪伴' });
+  const entries = await instance.library.entries();
+  expect(entries.find(e => e.category === 'affection')?.categoryDescription).toBe('温柔陪伴');
+  expect(entries.find(e => e.category === 'happy')?.categoryDescription).toBe('高兴');
+  const updated = (await instance.library.catalog())[0];
+  await expect(instance.library.edit({ kind: 'image', packId: updated.id, revision: updated.revision, id: entries[0].id,
+    category: '../escape', caption: 'bad', visibleText: '', tags: [] })).rejects.toThrow('Invalid category');
+  expect((await instance.library.catalog())[0].revision).toBe(updated.revision);
+});
