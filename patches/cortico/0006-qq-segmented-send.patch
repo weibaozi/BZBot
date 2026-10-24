@@ -1,0 +1,732 @@
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index 03a5257..09ebece 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -1,4 +1,4 @@
+-<!-- Owner: src/worlds/qq/definition.ts, src/worlds/qq/driver.ts, src/worlds/qq/normalize.ts, src/worlds/qq/world.ts -->
++<!-- Owner: src/worlds/qq/definition.ts, src/worlds/qq/driver.ts, src/worlds/qq/normalize.ts, src/worlds/qq/world.ts, src/worlds/qq/segment.ts -->
+ 
+ # worlds/qq
+ 
+@@ -32,6 +32,18 @@ OneBot v11 标准动作:`get_login_info`、`get_group_info`、`get_group_member_
+ | 通知 `group_msg_emoji_like` | 不产生表情回应事件 |
+ | `notify/poke` 的 `raw_info` | 动作文案退回「戳了戳」 |
+ 
++## 分段发送
++
++`qq_confirm` 发出时,正文按目标会话类型的规则 `worlds.qq.segment.private` / `worlds.qq.segment.group`
++切成几条依次发出,条与条之间停顿。规则与默认值照 AstrBot 的分段回复:默认正则 `.*?[。？！~…]+|.+$`
++切在句末标点之后并保留标点,`words` 方式切在分段词之后并去掉分段词;切后可按「内容过滤正则」删去指定内容,
++空段丢弃。正文超过字数上限(默认 150)或切不出两段时整条发出。间隔取随机区间(默认 1.5–3.5 秒),
++或按字数取 `log_底数(字数+1)` 秒再加 0–0.5 秒;第一条不等。默认私聊开、群聊关,改动对下一次发送生效。
++
++引用只跟第一条,图片跟最后一条,每条各记一条 `qq.self`。起草回执列出将分成的几段,发送回执列出各条消息号。
++某条发送失败就停下:一条都没发出时保留草稿可重试;已发出过的,回执写明哪几条已发出,草稿清掉,不会重发。
++分段期间这次工具调用一直等到最后一条发出。
++
+ ## 分享卡片
+ 
+ JSON 分享卡片的来源名、内容标题和目标链接写入消息正文。直接消息、引用取回与合并转发使用相同解析规则。
+diff --git a/src/worlds/qq/config.ts b/src/worlds/qq/config.ts
+index 43eed94..a6e83bd 100644
+--- a/src/worlds/qq/config.ts
++++ b/src/worlds/qq/config.ts
+@@ -1,8 +1,10 @@
+-import type { ConfigGroup } from '../../core/types.ts';
++import type { ConfigGroup, ConfigProperty } from '../../core/types.ts';
+ import type { Language } from '../../core/language.ts';
+ import type { VisionConfig } from './vision.ts';
+ import { text } from './strings.ts';
+ import { replyText } from './reply-strings.ts';
++import { segmentText } from './segment-strings.ts';
++import type { SegmentConfig } from './segment.ts';
+ 
+ /** 关闭的 roster 条目仍持久化并显示,仅从监听集合中排除。 */
+ export interface QQRosterEntry {
+@@ -30,6 +32,28 @@ export const QQ_SECRETS = { vision: 'OPENROUTER_API_KEY' } as const;
+  * 本 World 声明的可调项。只声明**World 自己**的参数:连接与监听名单有
+  * 专用面板(要卡片式增删、要重启),这里声明回复与辅助视觉配置。文案按界面语言给。
+  */
++/** 私聊与群聊各一套分段发送规则,都热更新。 */
++function segmentFields(language: Language) {
++  const s = segmentText(language);
++  const fields: Record<string, ConfigProperty> = {};
++  for (const kind of ['private', 'group'] as const) {
++    const at = (name: string) => `worlds.qq.segment.${kind}.${name}`;
++    const field = (name: keyof typeof s.fields, schema: Omit<ConfigProperty, 'title'>) => {
++      fields[at(name)] = { ...schema, title: `${s.kinds[kind]} · ${s.fields[name].title}`, description: s.fields[name].description, 'x-hot': true };
++    };
++    field('enabled', { type: 'boolean' });
++    field('maxChars', { type: 'integer', minimum: 1, maximum: 10_000, multipleOf: 1, 'x-suffix': s.chars });
++    field('mode', { type: 'string', enum: ['regex', 'words'] });
++    field('regex', { type: 'string' });
++    field('words', { type: 'string' });
++    field('cleanup', { type: 'string' });
++    field('intervalMethod', { type: 'string', enum: ['random', 'log'] });
++    field('interval', { type: 'array', items: { type: 'number', minimum: 0, maximum: 60 }, minItems: 2, maxItems: 2, 'x-suffix': s.seconds });
++    field('logBase', { type: 'number', minimum: 1.01, maximum: 100 });
++  }
++  return fields;
++}
++
+ export function qqConfigGroup(language: Language): ConfigGroup {
+   const t = text(language);
+   return {
+@@ -45,6 +69,7 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+           description: replyText(language).description,
+           'x-hot': true,
+         },
++        ...segmentFields(language),
+         'worlds.qq.vision.enabled': {
+           type: 'boolean',
+           title: t.visionEnabledTitle,
+@@ -108,6 +133,8 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+ export interface QQConfigSection {
+   enabled: boolean;
+   quoteReply: boolean;
++  /** 确认发送时按会话类型分段 */
++  segment: SegmentConfig;
+   /** OneBot v11 协议端的正向 WS 地址 */
+   wsUrl: string;
+   /** 群 roster,逐项热更新;关闭的条目仍持久化并显示,但不参与监听。 */
+diff --git a/src/worlds/qq/definition.ts b/src/worlds/qq/definition.ts
+index 8a2d006..eb45cee 100644
+--- a/src/worlds/qq/definition.ts
++++ b/src/worlds/qq/definition.ts
+@@ -2,12 +2,13 @@ import { describeTools, type WorldDefinition } from '../../world.ts';
+ import { type QQConfigSection, QQ_DEFAULTS, QQ_SECRETS } from './config.ts';
+ import { QQWorld, QQ_TOOL_DECLS, enabledRosterIds } from './world.ts';
+ import { VISION_DEFAULTS, VisionService } from './vision.ts';
++import { SEGMENT_DEFAULTS } from './segment.ts';
+ import { OpenRouterVLMClient } from './vlm.ts';
+ 
+ export const QQ: WorldDefinition<QQConfigSection> = {
+   id: 'qq',
+   label: 'QQ',
+-  defaults: () => ({ ...QQ_DEFAULTS, groups: [], privates: [], vision: { ...VISION_DEFAULTS } }),
++  defaults: () => ({ ...QQ_DEFAULTS, groups: [], privates: [], vision: { ...VISION_DEFAULTS }, segment: SEGMENT_DEFAULTS() }),
+   create: (ctx) => {
+     const { cfg } = ctx;
+     // 辅助视觉依赖开关与密钥;没有它时,主模型收图则由 QQWorld 自己下载图片附件。
+@@ -36,6 +37,7 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+       {
+         vision,
+         quoteReply: () => cfg.quoteReply,
++        segment: () => cfg.segment,
+         imageCapture: cfg.vision,
+         gate: {
+           enabled: () => cfg.enabled,
+diff --git a/src/worlds/qq/segment-strings.ts b/src/worlds/qq/segment-strings.ts
+new file mode 100644
+index 0000000..17af80e
+--- /dev/null
++++ b/src/worlds/qq/segment-strings.ts
+@@ -0,0 +1,168 @@
++import type { Language } from '../../core/language.ts';
++
++type Field = 'enabled' | 'maxChars' | 'mode' | 'regex' | 'words' | 'cleanup' | 'intervalMethod' | 'interval' | 'logBase';
++interface SegmentText {
++  kinds: { private: string; group: string };
++  fields: Record<Field, { title: string; description: string }>;
++  seconds: string;
++  chars: string;
++}
++
++const strings: Record<Language, SegmentText> = {
++  zh: {
++    kinds: { private: '私聊', group: '群聊' }, seconds: '秒', chars: '字',
++    fields: {
++      enabled: { title: '分段发送', description: '确认发送时把正文切成几条依次发出。引用只跟第一条，图片跟最后一条。保存后对下一次发送生效。' },
++      maxChars: { title: '分段字数上限', description: '正文不超过这个字数才分段，更长的整条发出。' },
++      mode: { title: '分段方式', description: 'regex 按「分段正则」取每一段；words 切在「分段词」之后，并去掉分段词。' },
++      regex: { title: '分段正则', description: '每次匹配是一段。写错时使用默认正则。' },
++      words: { title: '分段词', description: 'words 方式使用，以空格分开。' },
++      cleanup: { title: '内容过滤正则', description: '从每段删去匹配的内容，如 [。？！] 删去句号、问号和感叹号。留空不删。' },
++      intervalMethod: { title: '间隔方式', description: 'random 在随机间隔里取；log 按字数取 log_底数(字数+1) 秒，再加 0–0.5 秒。' },
++      interval: { title: '随机间隔', description: '两段之间停顿的最小值和最大值。' },
++      logBase: { title: '对数底数', description: 'log 方式使用，须大于 1。' },
++    },
++  },
++  'zh-Hant': {
++    kinds: { private: '私聊', group: '群聊' }, seconds: '秒', chars: '字',
++    fields: {
++      enabled: { title: '分段傳送', description: '確認傳送時把正文切成幾則依序送出。引用只跟第一則，圖片跟最後一則。儲存後對下一次傳送生效。' },
++      maxChars: { title: '分段字數上限', description: '正文不超過這個字數才分段，更長的整則送出。' },
++      mode: { title: '分段方式', description: 'regex 按「分段正規表示式」取每一段；words 切在「分段詞」之後，並去掉分段詞。' },
++      regex: { title: '分段正規表示式', description: '每次匹配是一段。寫錯時使用預設的正規表示式。' },
++      words: { title: '分段詞', description: 'words 方式使用，以空格分開。' },
++      cleanup: { title: '內容過濾正規表示式', description: '從每段刪去匹配的內容，如 [。？！] 刪去句號、問號和驚嘆號。留空不刪。' },
++      intervalMethod: { title: '間隔方式', description: 'random 在隨機間隔裡取；log 按字數取 log_底數(字數+1) 秒，再加 0–0.5 秒。' },
++      interval: { title: '隨機間隔', description: '兩段之間停頓的最小值和最大值。' },
++      logBase: { title: '對數底數', description: 'log 方式使用，須大於 1。' },
++    },
++  },
++  en: {
++    kinds: { private: 'Private chats', group: 'Groups' }, seconds: 's', chars: 'chars',
++    fields: {
++      enabled: { title: 'Split messages', description: 'On send, split the text into several messages sent one after another. A quote goes with the first, an image with the last. Changes apply to the next send.' },
++      maxChars: { title: 'Split length limit', description: 'Only text up to this many characters is split; longer text is sent whole.' },
++      mode: { title: 'Split method', description: 'regex takes each match of the split pattern as a part; words splits after each split word and drops the word.' },
++      regex: { title: 'Split pattern', description: 'Each match is one part. An invalid pattern falls back to the default.' },
++      words: { title: 'Split words', description: 'Used by the words method, separated by spaces.' },
++      cleanup: { title: 'Removal pattern', description: 'Removes matches from each part; for example [。？！] removes full stops, question and exclamation marks. Empty removes nothing.' },
++      intervalMethod: { title: 'Pause method', description: 'random picks from the random pause range; log waits log_base(words + 1) seconds plus 0–0.5 s.' },
++      interval: { title: 'Random pause', description: 'Shortest and longest pause between two parts.' },
++      logBase: { title: 'Log base', description: 'Used by the log method; must be greater than 1.' },
++    },
++  },
++  ja: {
++    kinds: { private: '個人チャット', group: 'グループ' }, seconds: '秒', chars: '文字',
++    fields: {
++      enabled: { title: '分割送信', description: '送信時に本文を複数のメッセージに分けて順に送ります。引用は最初、画像は最後に付きます。変更は次の送信から適用されます。' },
++      maxChars: { title: '分割する文字数の上限', description: 'この文字数以下の本文だけを分割し、長い本文はそのまま送ります。' },
++      mode: { title: '分割方法', description: 'regex は分割パターンの一致ごとに 1 つ、words は分割語の後で切って分割語を除きます。' },
++      regex: { title: '分割パターン', description: '一致するごとに 1 つになります。無効なパターンは既定値を使います。' },
++      words: { title: '分割語', description: 'words 方式で使います。空白で区切ります。' },
++      cleanup: { title: '除去パターン', description: '各部分から一致した内容を除きます。例：[。？！] で句点・疑問符・感嘆符を除去。空欄なら除去しません。' },
++      intervalMethod: { title: '間隔の方法', description: 'random はランダム間隔から選び、log は log_底(語数+1) 秒に 0–0.5 秒を足します。' },
++      interval: { title: 'ランダム間隔', description: '部分と部分の間の最短と最長の待ち時間。' },
++      logBase: { title: '対数の底', description: 'log 方式で使います。1 より大きくしてください。' },
++    },
++  },
++  ko: {
++    kinds: { private: '개인 채팅', group: '그룹' }, seconds: '초', chars: '자',
++    fields: {
++      enabled: { title: '나눠 보내기', description: '보낼 때 본문을 여러 메시지로 나눠 차례로 보냅니다. 인용은 첫 메시지, 이미지는 마지막 메시지에 붙습니다. 변경 사항은 다음 전송부터 적용됩니다.' },
++      maxChars: { title: '나눌 글자 수 상한', description: '이 글자 수 이하의 본문만 나누고, 더 긴 본문은 그대로 보냅니다.' },
++      mode: { title: '나누는 방식', description: 'regex는 분할 패턴과 일치하는 부분마다 하나, words는 분할 단어 뒤에서 자르고 그 단어를 뺍니다.' },
++      regex: { title: '분할 패턴', description: '일치할 때마다 한 부분이 됩니다. 잘못된 패턴은 기본값을 씁니다.' },
++      words: { title: '분할 단어', description: 'words 방식에서 쓰며 공백으로 구분합니다.' },
++      cleanup: { title: '제거 패턴', description: '각 부분에서 일치하는 내용을 지웁니다. 예: [。？！]는 마침표, 물음표, 느낌표를 지웁니다. 비우면 지우지 않습니다.' },
++      intervalMethod: { title: '간격 방식', description: 'random은 무작위 간격에서 고르고, log는 log_밑(단어 수+1)초에 0–0.5초를 더합니다.' },
++      interval: { title: '무작위 간격', description: '두 부분 사이 대기 시간의 최솟값과 최댓값.' },
++      logBase: { title: '로그 밑', description: 'log 방식에서 쓰며 1보다 커야 합니다.' },
++    },
++  },
++  fr: {
++    kinds: { private: 'Conversations privées', group: 'Groupes' }, seconds: 's', chars: 'car.',
++    fields: {
++      enabled: { title: 'Envoi en plusieurs messages', description: 'À l’envoi, découpe le texte en plusieurs messages envoyés l’un après l’autre. La citation accompagne le premier, l’image le dernier. Prend effet au prochain envoi.' },
++      maxChars: { title: 'Longueur maximale découpée', description: 'Seul un texte de cette longueur au plus est découpé ; un texte plus long part en entier.' },
++      mode: { title: 'Méthode de découpe', description: 'regex prend chaque correspondance du motif comme une partie ; words coupe après chaque mot de découpe et le retire.' },
++      regex: { title: 'Motif de découpe', description: 'Chaque correspondance forme une partie. Un motif invalide est remplacé par celui par défaut.' },
++      words: { title: 'Mots de découpe', description: 'Utilisés par la méthode words, séparés par des espaces.' },
++      cleanup: { title: 'Motif de suppression', description: 'Retire les correspondances de chaque partie ; par exemple [。？！] retire points, points d’interrogation et d’exclamation. Vide ne retire rien.' },
++      intervalMethod: { title: 'Méthode de pause', description: 'random choisit dans la pause aléatoire ; log attend log_base(mots + 1) secondes plus 0 à 0,5 s.' },
++      interval: { title: 'Pause aléatoire', description: 'Pause la plus courte et la plus longue entre deux parties.' },
++      logBase: { title: 'Base du logarithme', description: 'Utilisée par la méthode log ; doit être supérieure à 1.' },
++    },
++  },
++  de: {
++    kinds: { private: 'Privatchats', group: 'Gruppen' }, seconds: 's', chars: 'Zeichen',
++    fields: {
++      enabled: { title: 'Nachrichten aufteilen', description: 'Beim Senden wird der Text in mehrere nacheinander gesendete Nachrichten geteilt. Ein Zitat gehört zur ersten, ein Bild zur letzten. Gilt ab dem nächsten Senden.' },
++      maxChars: { title: 'Längengrenze fürs Aufteilen', description: 'Nur Text bis zu dieser Zeichenzahl wird geteilt; längerer Text geht am Stück.' },
++      mode: { title: 'Aufteilungsart', description: 'regex nimmt jeden Treffer des Musters als Teil; words teilt nach jedem Trennwort und entfernt es.' },
++      regex: { title: 'Aufteilungsmuster', description: 'Jeder Treffer ist ein Teil. Ein ungültiges Muster fällt auf den Standard zurück.' },
++      words: { title: 'Trennwörter', description: 'Für die Art words, durch Leerzeichen getrennt.' },
++      cleanup: { title: 'Entfernungsmuster', description: 'Entfernt Treffer aus jedem Teil, z. B. [。？！] Punkte, Frage- und Ausrufezeichen. Leer entfernt nichts.' },
++      intervalMethod: { title: 'Pausenart', description: 'random wählt aus der Zufallspause; log wartet log_Basis(Wörter + 1) Sekunden plus 0–0,5 s.' },
++      interval: { title: 'Zufallspause', description: 'Kürzeste und längste Pause zwischen zwei Teilen.' },
++      logBase: { title: 'Logarithmusbasis', description: 'Für die Art log; muss größer als 1 sein.' },
++    },
++  },
++  'es-419': {
++    kinds: { private: 'Chats privados', group: 'Grupos' }, seconds: 's', chars: 'car.',
++    fields: {
++      enabled: { title: 'Enviar en partes', description: 'Al enviar, divide el texto en varios mensajes que salen uno tras otro. La cita va con el primero y la imagen con el último. Se aplica al próximo envío.' },
++      maxChars: { title: 'Límite de longitud para dividir', description: 'Solo se divide el texto de hasta esta cantidad de caracteres; el más largo se envía completo.' },
++      mode: { title: 'Método de división', description: 'regex toma cada coincidencia del patrón como una parte; words corta después de cada palabra divisoria y la quita.' },
++      regex: { title: 'Patrón de división', description: 'Cada coincidencia es una parte. Un patrón inválido usa el predeterminado.' },
++      words: { title: 'Palabras divisorias', description: 'Las usa el método words, separadas por espacios.' },
++      cleanup: { title: 'Patrón de eliminación', description: 'Quita las coincidencias de cada parte; por ejemplo [。？！] quita puntos y signos de interrogación y exclamación. Vacío no quita nada.' },
++      intervalMethod: { title: 'Método de pausa', description: 'random elige dentro de la pausa aleatoria; log espera log_base(palabras + 1) segundos más 0–0,5 s.' },
++      interval: { title: 'Pausa aleatoria', description: 'Pausa más corta y más larga entre dos partes.' },
++      logBase: { title: 'Base del logaritmo', description: 'La usa el método log; debe ser mayor que 1.' },
++    },
++  },
++  'pt-BR': {
++    kinds: { private: 'Conversas privadas', group: 'Grupos' }, seconds: 's', chars: 'caract.',
++    fields: {
++      enabled: { title: 'Enviar em partes', description: 'Ao enviar, divide o texto em várias mensagens enviadas uma após a outra. A citação vai com a primeira e a imagem com a última. Vale a partir do próximo envio.' },
++      maxChars: { title: 'Limite de tamanho para dividir', description: 'Só texto com até este número de caracteres é dividido; texto maior vai inteiro.' },
++      mode: { title: 'Método de divisão', description: 'regex usa cada correspondência do padrão como uma parte; words corta depois de cada palavra divisória e a remove.' },
++      regex: { title: 'Padrão de divisão', description: 'Cada correspondência é uma parte. Um padrão inválido usa o padrão predefinido.' },
++      words: { title: 'Palavras divisórias', description: 'Usadas pelo método words, separadas por espaços.' },
++      cleanup: { title: 'Padrão de remoção', description: 'Remove as correspondências de cada parte; por exemplo [。？！] remove pontos e sinais de interrogação e exclamação. Vazio não remove nada.' },
++      intervalMethod: { title: 'Método de pausa', description: 'random escolhe dentro da pausa aleatória; log espera log_base(palavras + 1) segundos mais 0–0,5 s.' },
++      interval: { title: 'Pausa aleatória', description: 'Pausa mais curta e mais longa entre duas partes.' },
++      logBase: { title: 'Base do logaritmo', description: 'Usada pelo método log; deve ser maior que 1.' },
++    },
++  },
++  it: {
++    kinds: { private: 'Chat private', group: 'Gruppi' }, seconds: 's', chars: 'car.',
++    fields: {
++      enabled: { title: 'Invio in più messaggi', description: 'All’invio divide il testo in più messaggi inviati uno dopo l’altro. La citazione va col primo, l’immagine con l’ultimo. Vale dal prossimo invio.' },
++      maxChars: { title: 'Lunghezza massima da dividere', description: 'Si divide solo il testo fino a questo numero di caratteri; quello più lungo parte intero.' },
++      mode: { title: 'Metodo di divisione', description: 'regex usa ogni corrispondenza del modello come una parte; words divide dopo ogni parola divisoria e la toglie.' },
++      regex: { title: 'Modello di divisione', description: 'Ogni corrispondenza è una parte. Un modello non valido usa quello predefinito.' },
++      words: { title: 'Parole divisorie', description: 'Usate dal metodo words, separate da spazi.' },
++      cleanup: { title: 'Modello di rimozione', description: 'Toglie le corrispondenze da ogni parte; ad esempio [。？！] toglie punti, punti interrogativi ed esclamativi. Vuoto non toglie nulla.' },
++      intervalMethod: { title: 'Metodo di pausa', description: 'random sceglie nella pausa casuale; log attende log_base(parole + 1) secondi più 0–0,5 s.' },
++      interval: { title: 'Pausa casuale', description: 'Pausa più breve e più lunga tra due parti.' },
++      logBase: { title: 'Base del logaritmo', description: 'Usata dal metodo log; deve essere maggiore di 1.' },
++    },
++  },
++  ru: {
++    kinds: { private: 'Личные чаты', group: 'Группы' }, seconds: 'с', chars: 'симв.',
++    fields: {
++      enabled: { title: 'Отправка частями', description: 'При отправке текст делится на несколько сообщений, которые уходят одно за другим. Цитата идёт с первым, изображение — с последним. Действует со следующей отправки.' },
++      maxChars: { title: 'Предел длины для деления', description: 'Делится только текст не длиннее этого числа символов; более длинный уходит целиком.' },
++      mode: { title: 'Способ деления', description: 'regex берёт каждое совпадение шаблона как часть; words делит после каждого слова-разделителя и убирает его.' },
++      regex: { title: 'Шаблон деления', description: 'Каждое совпадение — одна часть. Неверный шаблон заменяется шаблоном по умолчанию.' },
++      words: { title: 'Слова-разделители', description: 'Для способа words, через пробел.' },
++      cleanup: { title: 'Шаблон удаления', description: 'Удаляет совпадения из каждой части; например, [。？！] убирает точки, вопросительные и восклицательные знаки. Пусто — ничего не удаляется.' },
++      intervalMethod: { title: 'Способ паузы', description: 'random выбирает из случайной паузы; log ждёт log_основание(слова + 1) секунд плюс 0–0,5 с.' },
++      interval: { title: 'Случайная пауза', description: 'Самая короткая и самая длинная пауза между частями.' },
++      logBase: { title: 'Основание логарифма', description: 'Для способа log; должно быть больше 1.' },
++    },
++  },
++};
++
++export const segmentText = (language: Language) => strings[language];
+diff --git a/src/worlds/qq/segment.ts b/src/worlds/qq/segment.ts
+new file mode 100644
+index 0000000..2b0282e
+--- /dev/null
++++ b/src/worlds/qq/segment.ts
+@@ -0,0 +1,89 @@
++/**
++ * 分段发送:一份确认发出的草稿按会话类型的规则切成几条 QQ 消息,条与条之间停一会儿。
++ * 规则与默认值照 AstrBot 的分段回复:按正则或分段词切,切后可按正则删去指定内容;
++ * 间隔取随机区间,或按字数取对数。超过字数上限的正文整条发出,不切。
++ */
++
++/** 一类会话(私聊或群聊)的分段规则。 */
++export interface SegmentRule {
++  enabled: boolean;
++  /** 正文字数(按字符计)不超过它才分段;更长的整条发出。 */
++  maxChars: number;
++  /** `regex` 按 `regex` 取每一段;`words` 切在 `words` 里的分段词之后,分段词本身去掉。 */
++  mode: 'regex' | 'words';
++  regex: string;
++  /** 分段词,以空格分开。 */
++  words: string;
++  /** 每段删去匹配它的内容;空串不删。 */
++  cleanup: string;
++  /** `random` 在 `interval` 区间里随机;`log` 取 log_logBase(字数 + 1) 秒再加 0–0.5 秒。 */
++  intervalMethod: 'random' | 'log';
++  /** 随机间隔的上下限,单位秒。 */
++  interval: [number, number];
++  logBase: number;
++}
++
++export interface SegmentConfig {
++  private: SegmentRule;
++  group: SegmentRule;
++}
++
++export const DEFAULT_SEGMENT_REGEX = '.*?[。？！~…]+|.+$';
++
++const rule = (enabled: boolean): SegmentRule => ({
++  enabled, maxChars: 150, mode: 'regex', regex: DEFAULT_SEGMENT_REGEX, words: '。 ？ ！ ~ …', cleanup: '',
++  intervalMethod: 'random', interval: [1.5, 3.5], logBase: 2.6,
++});
++
++/** 私聊默认分段,群聊默认整条发。 */
++export const SEGMENT_DEFAULTS = (): SegmentConfig => ({ private: rule(true), group: rule(false) });
++
++/** 写错的正则当作没写:分段退回默认正则,删除规则不删。 */
++function compile(source: string, flags: string): RegExp | null {
++  try { return new RegExp(source, flags); } catch { return null; }
++}
++
++/**
++ * 把正文切成要发的几段。规则关闭、正文超过字数上限或切不出两段时,返回原文一段。
++ * 段首尾空白去掉,空段丢弃。
++ */
++export function splitText(text: string, rule: SegmentRule): string[] {
++  if (!rule.enabled || !text.trim() || [...text].length > rule.maxChars) return [text];
++  let parts: string[];
++  if (rule.mode === 'words') {
++    const words = rule.words.split(/\s+/).filter(Boolean).sort((a, b) => b.length - a.length);
++    if (!words.length) return [text];
++    const alternatives = words.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
++    parts = [...text.matchAll(new RegExp(`.*?(?:${alternatives})|.+$`, 'gs'))].map(match => {
++      const part = match[0];
++      const word = words.find(candidate => part.endsWith(candidate));
++      return word ? part.slice(0, -word.length) : part;
++    });
++  } else {
++    const pattern = compile(rule.regex, 'gms') ?? new RegExp(DEFAULT_SEGMENT_REGEX, 'gms');
++    parts = [...text.matchAll(pattern)].map(match => match[0]);
++  }
++  const cleanup = rule.cleanup ? compile(rule.cleanup, 'g') : null;
++  const segments = parts.map(part => (cleanup ? part.replace(cleanup, '') : part).trim()).filter(Boolean);
++  return segments.length > 1 ? segments : [text];
++}
++
++/** 字数:纯 ASCII 按空白分词计,否则数字母和数字(含汉字)。 */
++function wordCount(text: string): number {
++  // eslint-disable-next-line no-control-regex
++  if (/^[\x00-\x7f]*$/.test(text)) return text.split(/\s+/).filter(Boolean).length;
++  return [...text].filter(char => /[\p{L}\p{N}]/u.test(char)).length;
++}
++
++/** 发这一段之前等多久,单位毫秒。 */
++export function segmentDelayMs(segment: string, rule: SegmentRule, random: () => number = Math.random): number {
++  if (rule.intervalMethod === 'log') {
++    const base = Number.isFinite(rule.logBase) && rule.logBase > 1 ? rule.logBase : 2.6;
++    const seconds = Math.log(wordCount(segment) + 1) / Math.log(base);
++    return Math.round((seconds + random() * 0.5) * 1000);
++  }
++  const [low, high] = rule.interval;
++  const min = Math.max(0, Math.min(low, high));
++  const max = Math.max(0, low, high);
++  return Math.round((min + random() * (max - min)) * 1000);
++}
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index fc0a7e1..da25dc2 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -52,6 +52,7 @@ import { VISION_DEFAULTS, type VisionConfig, type VisionService } from './vision
+ import { downloadImageBytes } from './image-download.ts';
+ import { qqConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
+ import { text } from './strings.ts';
++import { segmentDelayMs, splitText, type SegmentConfig, type SegmentRule } from './segment.ts';
+ 
+ export type { Conv } from './conversation.ts';
+ const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+@@ -122,12 +123,26 @@ interface QQGatePanelDeps {
+ 
+ interface QQWorldDeps {
+   quoteReply?: () => boolean;
++  /** 按会话类型的分段发送规则,每次发送时读;没给就整条发。 */
++  segment?: () => SegmentConfig;
++  /** 两段之间的停顿;测试换成记录时长、不真等。 */
++  sleep?: (ms: number) => Promise<void>;
+   vision?: VisionService;
+   /** 无辅助视觉时下载入站图片用的上限;传入配置对象本身,热更新随之生效。 */
+   imageCapture?: QQImageCaptureOptions;
+   gate?: QQGatePanelDeps;
+ }
+ 
++/** 一条外发消息的内容;字节在发送时才取。 */
++interface OutgoingParts {
++  text: string;
++  replyMessageId?: number | string;
++  imageRef?: string;
++  imageBytes?: Uint8Array;
++  voiceRef?: string;
++  voiceBytes?: Uint8Array;
++}
++
+ type QQImageCaptureOptions = Pick<VisionConfig, 'timeoutMs' | 'maxImageBytes' | 'dedupPrecheckMs'>;
+ 
+ type IncomingImageDownload = { image: { buffer: Uint8Array; mime: string } | null };
+@@ -291,12 +306,22 @@ export class QQWorld implements World {
+     this.imageCapture = deps?.imageCapture ?? VISION_DEFAULTS;
+     this.gate = deps?.gate;
+     this.quoteReply = deps?.quoteReply ?? (() => QQ_DEFAULTS.quoteReply);
++    this.segment = deps?.segment ?? null;
++    this.sleep = deps?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+     this.watchedGroups = new Set(cfg.groups);
+     this.watchedPrivates = new Set(cfg.privates);
+   }
+ 
+   private readonly gate?: QQGatePanelDeps;
+   private readonly quoteReply: () => boolean;
++  private readonly segment: (() => SegmentConfig) | null;
++  private readonly sleep: (ms: number) => Promise<void>;
++
++  /** 这份正文按目标会话的规则要分成的几段;没有规则或不分段时是原文一段。语音条不带正文,不会分段。 */
++  private segmentsFor(target: Conv, body: string): { parts: string[]; rule: SegmentRule | null } {
++    const rule = this.segment?.()[target.kind === 'group' ? 'group' : 'private'] ?? null;
++    return { parts: rule ? splitText(body, rule) : [body], rule };
++  }
+ 
+   /** 被动识图在视觉服务可用时启用；识图描述写入事件库作为可检索记忆。 */
+   private passiveEnabled(): boolean {
+@@ -1472,17 +1497,50 @@ export class QQWorld implements World {
+   }
+ 
+   /** 实际发送到目标会话,回录 qq.self,返回回执文本 */
+-  private async sendToTarget(
+-    target: Conv,
+-    opts: {
+-      text: string;
+-      replyMessageId?: number | string;
+-      imageRef?: string;
+-      imageBytes?: Uint8Array;
+-      voiceRef?: string;
+-      voiceBytes?: Uint8Array;
+-    },
+-  ): Promise<string> {
++  private async sendToTarget(target: Conv, opts: OutgoingParts): Promise<string> {
++    const { messageId, omittedQuote } = await this.deliver(target, opts);
++    return `[sent${messageId !== undefined ? ` #${messageId}` : ''} → ${this.targetDesc(target)}]`
++      + (omittedQuote ? '\nQuote replies are disabled; sent without quoting.' : '');
++  }
++
++  /**
++   * 按分段规则依次发出:引用只跟第一段,图片跟最后一段,段与段之间停顿。
++   * 某段发送失败就停下,回执写明已发出的几段;已发出的不再重发。
++   */
++  private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule): Promise<{ receipt: string; sent: number }> {
++    const ids: string[] = [];
++    let omittedQuote = false;
++    for (const [index, part] of parts.entries()) {
++      const last = index === parts.length - 1;
++      try {
++        if (index > 0) await this.sleep(segmentDelayMs(part, rule));
++        const sent = await this.deliver(target, {
++          text: part,
++          ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}),
++          ...(last ? { imageRef: opts.imageRef, imageBytes: opts.imageBytes } : {}),
++        });
++        ids.push(sent.messageId !== undefined ? `#${sent.messageId}` : '(no id)');
++        omittedQuote ||= sent.omittedQuote;
++      } catch (e) {
++        const reason = e instanceof Error ? e.message : String(e);
++        return {
++          sent: ids.length,
++          receipt: ids.length
++            ? `[send failed on part ${index + 1} of ${parts.length} → ${this.targetDesc(target)}] ${reason}\n`
++              + `Parts already sent: ${ids.join(' ')}. The rest was not sent; the draft is cleared so sent parts are not repeated.`
++            : `[send failed] ${reason} (draft kept; confirm again to retry or cancel)`,
++        };
++      }
++    }
++    return {
++      sent: ids.length,
++      receipt: `[sent as ${parts.length} messages ${ids.join(' ')} → ${this.targetDesc(target)}]`
++        + (omittedQuote ? '\nQuote replies are disabled; sent without quoting.' : ''),
++    };
++  }
++
++  /** 发出一条并回录 qq.self;返回平台消息号与是否略去了引用。 */
++  private async deliver(target: Conv, opts: OutgoingParts): Promise<{ messageId: number | undefined; omittedQuote: boolean }> {
+     const host = this.host!;
+     const driver = this.driver!;
+     let imageBase64: string | undefined;
+@@ -1537,8 +1595,7 @@ export class QQWorld implements World {
+       this.knownMessages.set(String(messageId), { conv: target, ts: env.ts });
+     }
+     const omittedQuote = opts.replyMessageId !== undefined && !message.some(segment => segment.type === 'reply');
+-    return `[sent${messageId !== undefined ? ` #${messageId}` : ''} → ${this.targetDesc(target)}]`
+-      + (omittedQuote ? '\nQuote replies are disabled; sent without quoting.' : '');
++    return { messageId, omittedQuote };
+   }
+ 
+ 
+@@ -1634,6 +1691,8 @@ export class QQWorld implements World {
+           ? `Will quote #${rep.mid}.`
+           : 'Quote replies are disabled; this draft will be sent without quoting.');
+         lines.push(text.trim() ? `Text: ${text}` : voiceRef ? '(voice bar, no text)' : '(image only, no text)');
++        const { parts } = this.segmentsFor(target, text);
++        if (parts.length > 1) lines.push(`Will be sent as ${parts.length} messages with short pauses: ${parts.map((part) => `「${part}」`).join(' ')}`);
+         if (previewLine) lines.push(previewLine);
+         lines.push(
+           '',
+@@ -1676,14 +1735,15 @@ export class QQWorld implements World {
+               if (!got) return `[send failed] blob ${draft.voiceRef} is gone (draft kept)`;
+               voiceBytes = got.bytes;
+             }
+-            const receipt = await this.sendToTarget(draft.target, {
+-              text: draft.text,
+-              replyMessageId: draft.replyMessageId,
+-              imageRef: draft.imageRef,
+-              imageBytes,
+-              voiceRef: draft.voiceRef,
+-              voiceBytes,
+-            });
++            const outgoing = { text: draft.text, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, voiceRef: draft.voiceRef, voiceBytes };
++            const { parts, rule } = this.segmentsFor(draft.target, draft.text);
++            if (rule && parts.length > 1) {
++              // 发出过任何一段就清掉草稿,免得重试时重复发出已发的段;一段都没发出则照常保留
++              const result = await this.sendSegments(draft.target, outgoing, parts, rule);
++              if (result.sent > 0) this.pendingDraft = null;
++              return result.receipt;
++            }
++            const receipt = await this.sendToTarget(draft.target, outgoing);
+             this.pendingDraft = null; // 成功才清;失败保留草稿,可再 confirm 重试
+             return receipt;
+           } catch (e) {
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+new file mode 100644
+index 0000000..b3db022
+--- /dev/null
++++ b/tests/integration/qq-segment.test.ts
+@@ -0,0 +1,125 @@
++import { expect, it } from 'vitest';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { LANGUAGES } from '../../src/core/language.ts';
++import { qqConfigGroup } from '../../src/worlds/qq/config.ts';
++import { MockOneBot } from '../helpers/mock-onebot.ts';
++import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
++
++async function fixture() {
++  const tmp = makeTmpDir();
++  const mock = new MockOneBot({ port: 0, groupId: 424242 });
++  const port = await mock.start();
++  const cfg = makeCfg();
++  cfg.worlds.qq = { ...cfg.worlds.qq, enabled: true, wsUrl: `ws://127.0.0.1:${port}`,
++    groups: [{ id: 424242, enabled: true }], privates: [{ id: 1001, enabled: true }] };
++  // Pauses short enough for a test, long enough to see they happen between parts.
++  cfg.worlds.qq.segment.private.interval = [0.05, 0.05];
++  cfg.worlds.qq.segment.group.interval = [0.05, 0.05];
++  cfg.worlds.console.enabled = false; cfg.web.port = 0;
++  cfg.tick.dayIntervalMinutes = [999, 999]; cfg.tick.nightIntervalMinutes = null;
++  const memoryDir = join(tmp.dir, 'memory'); mkdirSync(memoryDir, { recursive: true });
++  writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
++  const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm: new FakeLLM() });
++  bot.core.bus.setPaused(true);
++  await bot.start(); await bot.qqWorld!.waitReady(5000);
++  const tool = (name: string) => bot.qqWorld!.tools().find(t => t.name === name)!;
++  const ctx = { role: 'main', log: nullLogger() };
++  const incoming = async (kind: 'group' | 'private') => {
++    const message = { user_id: 1001, nickname: 'fixture', text: 'hello' };
++    const mid = kind === 'group' ? mock.emitGroupMessage(message) : mock.emitPrivateMessage(message);
++    const deadline = Date.now() + 5000;
++    while (!bot.core.store.range({}).some(e => e.meta?.message_id === mid) && Date.now() < deadline) await sleep(20);
++    return mid;
++  };
++  const self = () => bot.core.store.range({}).filter(e => e.type === 'qq.self');
++  const done = async () => { await bot.stop(); await mock.close(); tmp.cleanup(); };
++  return { cfg, mock, tool, ctx, incoming, self, done, memoryDir };
++}
++
++it('a private reply goes out as one message per sentence, quoting only the first, with a pause between', async () => {
++  const { cfg, mock, tool, ctx, incoming, self, done } = await fixture();
++  try {
++    cfg.worlds.qq.quoteReply = true;
++    const mid = await incoming('private');
++    const staged = await tool('qq_draft').handler({ text: '今天好累。你呢？我先睡了', reply_to: String(mid) }, ctx);
++    expect(staged).toContain('Will be sent as 3 messages with short pauses: 「今天好累。」 「你呢？」 「我先睡了」');
++    const started = Date.now();
++    const receipt = await tool('qq_confirm').handler({ decision: 'send' }, ctx);
++    expect(Date.now() - started).toBeGreaterThanOrEqual(90);
++    const ids = mock.outbox.map(entry => entry.message_id);
++    expect(receipt).toBe(`[sent as 3 messages ${ids.map(id => `#${id}`).join(' ')} → 私聊 fixture]`);
++    expect(mock.outbox.map(entry => entry.params.message)).toEqual([
++      [{ type: 'reply', data: { id: String(mid) } }, { type: 'text', data: { text: '今天好累。' } }],
++      [{ type: 'text', data: { text: '你呢？' } }],
++      [{ type: 'text', data: { text: '我先睡了' } }],
++    ]);
++    expect(self().map(e => e.meta?.message_id)).toEqual(ids);
++    expect(self().map(e => e.text.replace(/^#\d+ \[[^\]]+\] /, ''))).toEqual(['你: 今天好累。', '你: 你呢？', '你: 我先睡了']);
++  } finally { await done(); }
++}, 15000);
++
++it('groups send whole by default and split once their rule is switched on, read at send time', async () => {
++  const { cfg, mock, tool, ctx, incoming, done } = await fixture();
++  try {
++    await incoming('group');
++    const draft = () => tool('qq_draft').handler({ to: 'group:424242', text: '好。走吧' }, ctx);
++    expect(await draft()).not.toContain('Will be sent as');
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toMatch(/^\[sent #\d+ → 群「测试群」\]$/);
++    await draft(); cfg.worlds.qq.segment.group.enabled = true;
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toMatch(/^\[sent as 2 messages/);
++    expect(mock.outbox.map(entry => entry.params.message)).toEqual([
++      [{ type: 'text', data: { text: '好。走吧' } }], [{ type: 'text', data: { text: '好。' } }], [{ type: 'text', data: { text: '走吧' } }],
++    ]);
++  } finally { await done(); }
++}, 15000);
++
++it('a failure after the first part reports what went out and drops the draft; a failure on the first keeps it', async () => {
++  const { mock, tool, ctx, incoming, self, done } = await fixture();
++  try {
++    await incoming('private');
++    let calls = 0;
++    mock.setActionHandler('send_private_msg', () => (++calls === 2 ? { retcode: 1200, message: 'rate limited' } : { data: { message_id: 7000 + calls } }));
++    await tool('qq_draft').handler({ to: 'private:1001', text: '一。二。三' }, ctx);
++    const receipt = await tool('qq_confirm').handler({ decision: 'send' }, ctx);
++    expect(receipt).toContain('[send failed on part 2 of 3 → 私聊 fixture] send_private_msg: retcode=1200 rate limited');
++    expect(receipt).toContain('Parts already sent: #7001. The rest was not sent');
++    expect(self().map(e => e.meta?.message_id)).toEqual([7001]);
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toContain('no draft to confirm');
++
++    mock.setActionHandler('send_private_msg', () => ({ retcode: 1200, message: 'offline' }));
++    await tool('qq_draft').handler({ to: 'private:1001', text: '一。二。' }, ctx);
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toContain('draft kept; confirm again to retry or cancel');
++    expect(await tool('qq_confirm').handler({ decision: 'cancel' }, ctx)).toContain('draft discarded');
++  } finally { await done(); }
++}, 15000);
++
++it('an image rides with the last part', async () => {
++  const { mock, tool, ctx, incoming, self, done, memoryDir } = await fixture();
++  try {
++    await incoming('private');
++    const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
++    writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
++    expect(await tool('qq_draft').handler({ to: 'private:1001', text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx)).toContain('Will be sent as 2 messages');
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toMatch(/^\[sent as 2 messages/);
++    expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type))).toEqual([['text'], ['image', 'text']]);
++    expect(self().at(-1)!.text).toContain('猫 [图片: mem:external/qq/images/cat.png]');
++  } finally { await done(); }
++}, 15000);
++
++it('declares both rule sets as hot settings in every supported UI language', () => {
++  for (const language of LANGUAGES) {
++    const properties = qqConfigGroup(language).schema.properties!;
++    for (const kind of ['private', 'group']) {
++      for (const name of ['enabled', 'maxChars', 'mode', 'regex', 'words', 'cleanup', 'intervalMethod', 'interval', 'logBase']) {
++        const field = properties[`worlds.qq.segment.${kind}.${name}`];
++        expect(field, `${language} ${kind}.${name}`).toMatchObject({ 'x-hot': true });
++        expect(field.title && field.description).toBeTruthy();
++      }
++    }
++  }
++  const titles = LANGUAGES.map(language => qqConfigGroup(language).schema.properties!['worlds.qq.segment.private.enabled'].title);
++  expect(new Set(titles).size).toBe(LANGUAGES.length);
++});
+diff --git a/tests/worlds/qq/segment.test.ts b/tests/worlds/qq/segment.test.ts
+new file mode 100644
+index 0000000..f43b4c7
+--- /dev/null
++++ b/tests/worlds/qq/segment.test.ts
+@@ -0,0 +1,41 @@
++import { expect, it } from 'vitest';
++import { SEGMENT_DEFAULTS, segmentDelayMs, splitText, type SegmentRule } from '../../../src/worlds/qq/segment.ts';
++
++const on = (patch: Partial<SegmentRule> = {}): SegmentRule => ({ ...SEGMENT_DEFAULTS().private, ...patch });
++
++it('the default pattern cuts after sentence-ending marks and keeps them, with the tail as its own part', () => {
++  expect(splitText('今天好累。你呢？我先睡了！！明天见', on())).toEqual(['今天好累。', '你呢？', '我先睡了！！', '明天见']);
++  expect(splitText('嗯……好吧~那就这样', on())).toEqual(['嗯……', '好吧~', '那就这样']);
++});
++
++it('keeps the text whole when the rule is off, the text is too long, or only one part comes out', () => {
++  expect(splitText('一。二。', on({ enabled: false }))).toEqual(['一。二。']);
++  expect(splitText('一。二。', on({ maxChars: 3 }))).toEqual(['一。二。']);
++  expect(splitText('一。二。', on({ maxChars: 4 }))).toEqual(['一。', '二。']);
++  expect(splitText('没有标点的一句话', on())).toEqual(['没有标点的一句话']);
++  expect(splitText('', on())).toEqual(['']);
++});
++
++it('words mode cuts after each split word and drops it, longest word first', () => {
++  expect(splitText('好的。走吧！嗯', on({ mode: 'words' }))).toEqual(['好的', '走吧', '嗯']);
++  expect(splitText('a--b-c', on({ mode: 'words', words: '- --' }))).toEqual(['a', 'b', 'c']);
++  expect(splitText('好的。走吧', on({ mode: 'words', words: '  ' }))).toEqual(['好的。走吧']);
++});
++
++it('the removal pattern cleans each part, and parts left empty are dropped', () => {
++  expect(splitText('好呀。真的吗？。', on({ cleanup: '[。？！]' }))).toEqual(['好呀', '真的吗']);
++});
++
++it('an invalid split pattern falls back to the default and an invalid removal pattern removes nothing', () => {
++  expect(splitText('一。二。', on({ regex: '(' }))).toEqual(['一。', '二。']);
++  expect(splitText('一。二。', on({ cleanup: '[' }))).toEqual(['一。', '二。']);
++});
++
++it('pauses fall within the random range, or follow the word count on the log method', () => {
++  expect(segmentDelayMs('x', on({ interval: [1.5, 3.5] }), () => 0)).toBe(1500);
++  expect(segmentDelayMs('x', on({ interval: [1.5, 3.5] }), () => 1)).toBe(3500);
++  expect(segmentDelayMs('x', on({ interval: [3, 1] }), () => 0)).toBe(1000);
++  // 7 characters of Chinese: log_2.6(8) ≈ 2.176 s, plus up to half a second.
++  expect(segmentDelayMs('今天天气很好。', on({ intervalMethod: 'log' }), () => 0)).toBe(Math.round(Math.log(7) / Math.log(2.6) * 1000));
++  expect(segmentDelayMs('good night all', on({ intervalMethod: 'log', logBase: 2 }), () => 1)).toBe(2500);
++});
