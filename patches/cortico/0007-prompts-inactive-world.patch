@@ -1,0 +1,361 @@
+diff --git a/src/bot.ts b/src/bot.ts
+index 432a804..0426850 100644
+--- a/src/bot.ts
++++ b/src/bot.ts
+@@ -414,6 +414,7 @@ function derivePrompts<C extends CoreConfig>(
+       description: d.description,
+       content,
+       revision: revisionOf(content),
++      ...(d.scope === 'world' && !assembly.mounted.some((m) => m.id === d.worldId) ? { inactive: true } : {}),
+     };
+   };
+   return {
+diff --git a/src/web/client/features/prompts/index.ts b/src/web/client/features/prompts/index.ts
+index 57cc7ca..b702b33 100644
+--- a/src/web/client/features/prompts/index.ts
++++ b/src/web/client/features/prompts/index.ts
+@@ -28,6 +28,8 @@ function description(segment: PrefixSegment, doc?: PromptDoc): { title: string;
+   return { title: doc?.title || segment.title, detail: doc ? doc.description ?? '' : segment.sourceKey ? S.sourceMissing(segment.sourceKey) : S.fromCode };
+ }
+ 
++const SHOW_INACTIVE_KEY = 'cortico.prompts.showInactiveWorlds';
++
+ export async function mountPrompts(ctx: FeatureContext): Promise<void> {
+   const { ui, root, signal } = ctx;
+   try { folds = new Map(JSON.parse(sessionStorage.getItem(FOLDS_KEY) ?? '[]')); } catch { /* Keep this window's in-memory state if storage is unavailable. */ }
+@@ -39,6 +41,9 @@ export async function mountPrompts(ctx: FeatureContext): Promise<void> {
+   let pendingApply = false;
+   let savePromise: Promise<boolean> | null = null;
+   let changingSession = false;
++  /** Templates of Worlds that are off stay out of the page unless the viewer asks for them; the choice is kept per browser. */
++  let showInactive = false;
++  try { showInactive = localStorage.getItem(SHOW_INACTIVE_KEY) === '1'; } catch { /* Off when storage is unavailable. */ }
+   const toolbar = ui.h('div', 'prompt-toolbar');
+   const actions = ui.h('div', 'prompt-actions');
+   const status = ui.msgline('');
+@@ -74,7 +79,9 @@ export async function mountPrompts(ctx: FeatureContext): Promise<void> {
+       const doc = key ? docs.get(key) : undefined;
+       const changed = key && dirty.has(key);
+       section.badge.textContent = changed ? S.unsaved : doc ? S.editableTemplate : S.flagReadonly;
+-      if (doc && !segments.some((s) => s.sourceKey === key)) section.badge.textContent += ` · ${S.outsidePrefix}`;
++      if (doc && !segments.some((s) => s.sourceKey === key)) section.badge.textContent += ` · ${doc.inactive ? S.worldInactive : S.outsidePrefix}`;
++      section.label.classList.toggle('is-inactive', !!doc?.inactive);
++      section.cell.classList.toggle('is-inactive', !!doc?.inactive);
+       section.badge.classList.toggle('is-dirty', !!changed);
+       section.toggle.title = doc?.origin === 'deployment' ? S.loadedFromDeployment : doc?.origin === 'package' ? S.loadedFromPackage : doc?.origin === 'module' ? S.loadedFromWorld : doc ? S.loadedFromSource : S.flagReadonly;
+       if (section.origin) section.origin.textContent = doc!.origin === 'deployment' ? S.originDeployment : doc!.origin === 'package' ? S.originPackage : S.originWorld;
+@@ -108,7 +115,13 @@ export async function mountPrompts(ctx: FeatureContext): Promise<void> {
+   restore.disabled = true;
+   const save = ui.button(S.saveToFile, { size: 'sm', onClick: () => { void saveAll(); } });
+   save.title = 'Ctrl / ⌘ + S';
+-  actions.append(expand, undoStep, restore, save);
++  const inactiveToggle = ui.checkbox(S.showInactiveWorlds, { checked: showInactive, onChange: (checked) => {
++    showInactive = checked;
++    try { localStorage.setItem(SHOW_INACTIVE_KEY, checked ? '1' : '0'); } catch { /* Kept for this page only. */ }
++    void load();
++  } });
++  inactiveToggle.el.classList.add('prompt-inactive-toggle');
++  actions.append(inactiveToggle.el, expand, undoStep, restore, save);
+   toolbar.append(status, actions);
+ 
+   /** Reads the rendered prefix into `segments` and the full preview; on failure `segments` keeps its value. */
+@@ -143,6 +156,8 @@ export async function mountPrompts(ctx: FeatureContext): Promise<void> {
+       dividers.replaceChildren();
+       segments.forEach(addSection);
+       for (const doc of docs.values()) {
++        // A template with unsaved edits stays visible so its edits are never hidden from the save.
++        if (doc.inactive && !showInactive && !dirty.has(doc.key)) continue;
+         if (doc.role === 'envPrompt' && !segments.some((s) => s.sourceKey === doc.key)) addSection({ title: doc.title, sourceKey: doc.key, text: '' });
+       }
+       editor.setBlocks(sections.map(({ segment, collapsed }) => {
+diff --git a/src/web/client/features/prompts/strings.de.ts b/src/web/client/features/prompts/strings.de.ts
+index fcddadc..7124587 100644
+--- a/src/web/client/features/prompts/strings.de.ts
++++ b/src/web/client/features/prompts/strings.de.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "Gespeichert; Präfix zum Anwenden neu laden",
+   outsidePrefix: "Nicht im aktuellen Präfix",
++  worldInactive: "World ist aus; nicht im aktuellen Präfix",
++  showInactiveWorlds: "Ausgeschaltete World anzeigen",
+   expanded: "Ausgeklappt",
+   collapsed: "Eingeklappt",
+   expandAll: "Alle aufklappen",
+diff --git a/src/web/client/features/prompts/strings.es-419.ts b/src/web/client/features/prompts/strings.es-419.ts
+index a44a684..e0084ff 100644
+--- a/src/web/client/features/prompts/strings.es-419.ts
++++ b/src/web/client/features/prompts/strings.es-419.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "Guardado; recarga el prefijo para aplicar",
+   outsidePrefix: "Fuera del prefijo actual",
++  worldInactive: "World desactivado; fuera del prefijo actual",
++  showInactiveWorlds: "Mostrar World desactivados",
+   expanded: "Expandido",
+   collapsed: "Contraído",
+   expandAll: "Expandir todo",
+diff --git a/src/web/client/features/prompts/strings.fr.ts b/src/web/client/features/prompts/strings.fr.ts
+index 3fc433f..bdf6c77 100644
+--- a/src/web/client/features/prompts/strings.fr.ts
++++ b/src/web/client/features/prompts/strings.fr.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "Enregistré ; rechargez le préfixe pour appliquer",
+   outsidePrefix: "Absent du préfixe actuel",
++  worldInactive: "World désactivé ; absent du préfixe actuel",
++  showInactiveWorlds: "Afficher les World désactivés",
+   expanded: "Déplié",
+   collapsed: "Replié",
+   expandAll: "Tout déplier",
+diff --git a/src/web/client/features/prompts/strings.it.ts b/src/web/client/features/prompts/strings.it.ts
+index 3a5f19a..10885d0 100644
+--- a/src/web/client/features/prompts/strings.it.ts
++++ b/src/web/client/features/prompts/strings.it.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "Salvato; ricarica il prefisso per applicare",
+   outsidePrefix: "Fuori dal prefisso attuale",
++  worldInactive: "World disattivato; fuori dal prefisso attuale",
++  showInactiveWorlds: "Mostra i World disattivati",
+   expanded: "Espanso",
+   collapsed: "Compresso",
+   expandAll: "Espandi tutto",
+diff --git a/src/web/client/features/prompts/strings.ja.ts b/src/web/client/features/prompts/strings.ja.ts
+index b740e79..cfa3cac 100644
+--- a/src/web/client/features/prompts/strings.ja.ts
++++ b/src/web/client/features/prompts/strings.ja.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "保存済み。プレフィックスの再読み込み後に反映",
+   outsidePrefix: "現在のプレフィックスに未使用",
++  worldInactive: "World が無効のため、現在のプレフィックスに未使用",
++  showInactiveWorlds: "無効な World も表示",
+   expanded: "展開中",
+   collapsed: "折りたたみ中",
+   expandAll: "すべて展開",
+diff --git a/src/web/client/features/prompts/strings.ko.ts b/src/web/client/features/prompts/strings.ko.ts
+index 7f7edbd..56b5f8a 100644
+--- a/src/web/client/features/prompts/strings.ko.ts
++++ b/src/web/client/features/prompts/strings.ko.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "저장됨. 접두사를 다시 불러오면 적용됩니다",
+   outsidePrefix: "현재 프리픽스에 포함되지 않음",
++  worldInactive: "World가 꺼져 있어 현재 프리픽스에 포함되지 않음",
++  showInactiveWorlds: "꺼진 World도 표시",
+   expanded: "펼쳐짐",
+   collapsed: "접힘",
+   expandAll: "모두 펼치기",
+diff --git a/src/web/client/features/prompts/strings.pt-BR.ts b/src/web/client/features/prompts/strings.pt-BR.ts
+index 93d8b0d..d707198 100644
+--- a/src/web/client/features/prompts/strings.pt-BR.ts
++++ b/src/web/client/features/prompts/strings.pt-BR.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "Salvo; recarregue o prefixo para aplicar",
+   outsidePrefix: "Fora do prefixo atual",
++  worldInactive: "World desativado; fora do prefixo atual",
++  showInactiveWorlds: "Mostrar World desativados",
+   expanded: "Expandido",
+   collapsed: "Recolhido",
+   expandAll: "Expandir tudo",
+diff --git a/src/web/client/features/prompts/strings.ru.ts b/src/web/client/features/prompts/strings.ru.ts
+index 3ebe346..a8e6e45 100644
+--- a/src/web/client/features/prompts/strings.ru.ts
++++ b/src/web/client/features/prompts/strings.ru.ts
+@@ -9,6 +9,8 @@ const plural = (n: number, one: string, few: string, many: string) => {
+ export const S: Partial<typeof en> = {
+   pendingReload: "Сохранено; перезагрузите префикс для применения",
+   outsidePrefix: "Не входит в текущий префикс",
++  worldInactive: "World выключен; не входит в текущий префикс",
++  showInactiveWorlds: "Показывать выключенные World",
+   expanded: "Развёрнуто",
+   collapsed: "Свёрнуто",
+   expandAll: "Развернуть всё",
+diff --git a/src/web/client/features/prompts/strings.ts b/src/web/client/features/prompts/strings.ts
+index 427fac7..128b9d9 100644
+--- a/src/web/client/features/prompts/strings.ts
++++ b/src/web/client/features/prompts/strings.ts
+@@ -12,6 +12,8 @@ import { S as ru } from './strings.ru.ts';
+ const zh = {
+   pendingReload: "已保存，重载前缀后生效",
+   outsidePrefix: "未纳入当前前缀",
++  worldInactive: "World 未启用，不进前缀",
++  showInactiveWorlds: "显示未启用的 World",
+   expanded: "已展开",
+   collapsed: "未展开",
+   expandAll: "全部展开",
+@@ -92,6 +94,8 @@ const zh = {
+ export const en: typeof zh = {
+   pendingReload: "Saved; reload the prefix to apply",
+   outsidePrefix: "Outside the current prefix",
++  worldInactive: "World is off; outside the current prefix",
++  showInactiveWorlds: "Show Worlds that are off",
+   expanded: "Expanded",
+   collapsed: "Collapsed",
+   expandAll: "Expand all",
+diff --git a/src/web/client/features/prompts/strings.zh-Hant.ts b/src/web/client/features/prompts/strings.zh-Hant.ts
+index d18330d..3905306 100644
+--- a/src/web/client/features/prompts/strings.zh-Hant.ts
++++ b/src/web/client/features/prompts/strings.zh-Hant.ts
+@@ -3,6 +3,8 @@ import type { en } from './strings.ts';
+ export const S: Partial<typeof en> = {
+   pendingReload: "已儲存，重新載入前綴後生效",
+   outsidePrefix: "未納入目前前綴",
++  worldInactive: "World 未啟用，不進前綴",
++  showInactiveWorlds: "顯示未啟用的 World",
+   expanded: "已展開",
+   collapsed: "未展開",
+   expandAll: "全部展開",
+diff --git a/src/web/client/features/prompts/view.ts b/src/web/client/features/prompts/view.ts
+index a39cea6..f487844 100644
+--- a/src/web/client/features/prompts/view.ts
++++ b/src/web/client/features/prompts/view.ts
+@@ -26,6 +26,8 @@ export interface PromptDoc {
+   /** 当前模板来源：部署覆盖、bot 包覆盖或 World 默认。 */
+   origin?: EnvPromptOrigin;
+   vars?: PromptVar[];
++  /** 所属 World 没有挂载:模板可编辑,不进前缀。 */
++  inactive?: boolean;
+ }
+ 
+ export interface PromptsViewDeps {
+diff --git a/src/web/public/styles.css b/src/web/public/styles.css
+index 98d6830..667f9a6 100644
+--- a/src/web/public/styles.css
++++ b/src/web/public/styles.css
+@@ -1277,6 +1277,7 @@
+ 
+   .prefix-rail { position: relative; flex: 0 0 190px; }
+   .prefix-railcell { position:absolute; left:0; right:0; }
++  .prefix-label.is-inactive, .prefix-railcell.is-inactive { opacity:.55; }
+   .prefix-railcontent { position:sticky; top:var(--prompt-rail-top, 112px); display:flex; flex-direction:column; align-items:stretch; gap:8px; padding:6px 0; max-height:calc(100vh - var(--prompt-rail-top, 112px) - 12px); overflow:auto; }
+   .prefix-railcontent:empty { display:none; }
+   .prompt-variable-list { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+diff --git a/src/web/server.ts b/src/web/server.ts
+index a5af1c9..0fe7b6f 100644
+--- a/src/web/server.ts
++++ b/src/web/server.ts
+@@ -523,6 +523,8 @@ export interface PromptDocument {
+   /** 当前模板来源：部署覆盖、bot 包覆盖或 World 默认。保存写入部署覆盖。 */
+   origin?: EnvPromptOrigin;
+   vars?: PromptVarView[];
++  /** World 的模板,而这个 World 没有挂载(关闭或未激活):可以编辑,不进前缀。 */
++  inactive?: boolean;
+ }
+ 
+ /** 前缀的一段。`sourceKey` 指向可编辑模板;没有 = 现拼的,编辑器标只读。 */
+diff --git a/tests/prompts-inactive-world.test.ts b/tests/prompts-inactive-world.test.ts
+new file mode 100644
+index 0000000..efd21c5
+--- /dev/null
++++ b/tests/prompts-inactive-world.test.ts
+@@ -0,0 +1,47 @@
++/**
++ * 提示词页列出全部 World 的环境模板以便提前编辑;没挂载的 World 的模板标出来,它不进前缀。
++ */
++import { afterAll, beforeAll, expect, it } from 'vitest';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join, resolve } from 'node:path';
++import { createBot, type Bot } from '../src/bot.ts';
++import { loadDeployment } from '../src/deploy.ts';
++import { FakeLLM } from './core/helpers.ts';
++import { withWorlds } from '../src/world.ts';
++import { loadBuiltinWorlds } from '../src/worlds/index.ts';
++import cormini, { type CorminiConfig } from '../bots/cormini/index.ts';
++
++const definition = withWorlds(cormini, await loadBuiltinWorlds());
++let dir: string;
++let bot: Bot<CorminiConfig>;
++let port: number;
++
++beforeAll(async () => {
++  dir = mkdtempSync(join(tmpdir(), 'prompts-inactive-'));
++  const loaded = loadDeployment(definition, dir, resolve(import.meta.dirname, '..'));
++  loaded.config.web.port = 0;
++  loaded.config.worlds.console.enabled = true;
++  loaded.config.worlds.qq.enabled = false;
++  bot = createBot(loaded, { ...definition, build: (l, worlds) => ({ ...definition.build(l, worlds), llm: new FakeLLM() }) });
++  port = (await bot.start()).port as number;
++}, 20000);
++
++afterAll(async () => {
++  await bot.stop();
++  rmSync(dir, { recursive: true, force: true });
++});
++
++it('marks the templates of a World that is not mounted, and only those', async () => {
++  const get = async (path: string) => (await fetch(`http://127.0.0.1:${port}${path}`)).json() as Promise<Record<string, any>>;
++  const prompts = (await get('/api/prompts')).prompts as Array<{ key: string; role?: string; inactive?: boolean }>;
++  const envOf = (world: string) => prompts.find((doc) => doc.role === 'envPrompt' && doc.key.startsWith(`worlds.${world}.`));
++  expect(envOf('qq')).toMatchObject({ inactive: true });
++  expect(envOf('console')).toBeDefined();
++  expect(envOf('console')).not.toHaveProperty('inactive');
++  // Every World-owned template of an unmounted World is marked; templates outside any World never are.
++  expect(prompts.filter((doc) => doc.key.startsWith('worlds.qq.')).every((doc) => doc.inactive === true)).toBe(true);
++  expect(prompts.filter((doc) => !doc.key.startsWith('worlds.')).every((doc) => !('inactive' in doc))).toBe(true);
++  const segments = (await get('/api/prompts/prefix')).segments as Array<{ sourceKey?: string }>;
++  expect(segments.some((segment) => segment.sourceKey === envOf('qq')!.key)).toBe(false);
++});
+diff --git a/tests/web/feature-prompts.test.ts b/tests/web/feature-prompts.test.ts
+index 3ed2ef2..5616133 100644
+--- a/tests/web/feature-prompts.test.ts
++++ b/tests/web/feature-prompts.test.ts
+@@ -650,7 +650,7 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
+ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+ function prefix() {
+   return [
+-    ...sources.filter((doc) => doc.content).map((doc) => ({ title: doc.key, sourceKey: doc.key, text: doc.content })),
++    ...sources.filter((doc) => doc.content && !doc.inactive).map((doc) => ({ title: doc.key, sourceKey: doc.key, text: doc.content })),
+     { title: 'WORKSPACE', text: generated },
+   ];
+ }
+@@ -689,7 +689,8 @@ beforeEach(() => {
+   });
+ });
+ 
+-async function mountPage() {
++/** Mounts the page and waits for the section of `ready` to render. */
++async function mountPage(ready = worldKey) {
+   const life = new Lifecycle((error: unknown) => { throw error; });
+   mounted.push(life);
+   const root = document.createElement('div');
+@@ -698,7 +699,9 @@ async function mountPage() {
+   const router = new Router({ win: window, confirmLeave: (body: string) => ui.confirm({ title: 'Leave', body }) });
+   life.own(router.start());
+   await prompts.mountPrompts({ root, ui, router, route: router.route, signal: life.signal, lifecycle: life, capabilities: { prompts: true, storage: true, sessionControl: true }, onError() {} });
+-  await vi.waitFor(() => expect(root.querySelector<HTMLElement>(`[data-source="${worldKey}"]`)!.textContent).toContain('Fixture World'));
++  await vi.waitFor(() => ready === worldKey
++    ? expect(root.querySelector<HTMLElement>(`[data-source="${worldKey}"]`)!.textContent).toContain('Fixture World')
++    : expect(root.querySelector(`[data-source="${ready}"]`)).not.toBeNull());
+   const view = EditorView.findFromDOM(root.querySelector<HTMLElement>('.cm-editor')!);
+   const button = (label: string) => [...root.querySelectorAll<HTMLButtonElement>('.prompt-actions button')].find((el) => el.textContent === label)!;
+   const edit = (text: string) => view.dispatch({ changes: { from: 0, insert: text }, userEvent: 'input.type' });
+@@ -763,6 +766,26 @@ it('refreshes variables and generated text after applying, preserving undo and r
+   await vi.waitFor(() => expect(root.querySelector<HTMLElement>('.prompt-railwarn')!.textContent).toContain('fixture.name'));
+ });
+ 
++it('templates of Worlds that are off are hidden until asked for, then marked and dimmed, and the choice is kept', async () => {
++  sources[1].inactive = true;
++  localStorage.removeItem('cortico.prompts.showInactiveWorlds');
++  const { root } = await mountPage('instructions');
++  expect(root.querySelector(`[data-source="${worldKey}"]`)).toBeNull();
++  const toggle = [...root.querySelectorAll<HTMLLabelElement>('.prompt-inactive-toggle')].find((label) => label.textContent === S.showInactiveWorlds)!;
++  const box = toggle.querySelector<HTMLInputElement>('input')!;
++  expect(box.checked).toBe(false);
++  box.click();
++  await vi.waitFor(() => expect(root.querySelector(`[data-source="${worldKey}"]`)).not.toBeNull());
++  expect(localStorage.getItem('cortico.prompts.showInactiveWorlds')).toBe('1');
++  const flag = root.querySelector<HTMLElement>(`[data-source="${worldKey}"]`)!;
++  expect(flag.textContent).toContain(S.worldInactive);
++  expect(flag.textContent).not.toContain(S.outsidePrefix);
++  expect(flag.textContent).toContain(S.editableTemplate);
++  expect(flag.classList.contains('is-inactive')).toBe(true);
++  expect(root.querySelector<HTMLElement>('[data-source="instructions"]')!.classList.contains('is-inactive')).toBe(false);
++  localStorage.removeItem('cortico.prompts.showInactiveWorlds');
++});
++
+ it('retains empty editable templates omitted from the prefix and applies their restored content', async () => {
+   sources[1].content = '';
+   const { root, view, button } = await mountPage();

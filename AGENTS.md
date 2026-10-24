@@ -17,6 +17,8 @@ myBot 是基于 Cortico 的自用陪伴 bot。开工前先读：
 2. **Cortico 改代码的规矩同样适用于我们的扩展**：遵守 `vendor/cortico/AGENTS.md` 和 `PHILOSOPHY.md` 的约定，尤其是"最小先验"（能用提示词约束的，就不写死控制流）和"诚实认知"（事件和回执只陈述能确认的事实）。
 3. **保护缓存**：会变的内容（时间、状态、检索结果、委派结果）只能追加到上下文末尾，不能放进前缀。见 [docs/architecture.md](docs/architecture.md) 第 3 节。
 4. **测试**：用真实的事件库、真实的 SQLite、真实的端口测。只有 LLM 和 embedding 可以用假数据。测试里不访问网络。
+   - **小改动不跑全量**：只跑改动涉及的测试文件和两个 typecheck（`tsconfig.json`、`tsconfig.web.json`）。Cortico 全量一次要两分多钟，攒几次改动再跑一次；改动跨很多模块、动到共享接口，或升级锁定的 commit 时才每次都跑。
+   - 全量里 `tests/web/provider-stream.test.ts` 偶发 "Worker exited unexpectedly"（未打补丁的 Cortico 也会），单独重跑通过即可。
 5. **不碰真实部署**：验证时用单独的部署目录（`CORTICO_HOME` 指向一个空目录），不要用正在运行的 profile 的数据。
 6. **密钥**：不写进代码、测试、日志和 `plugins/` 目录。
 7. **一次性的脚本和实验**放在 `scratch/` 下（不纳入版本控制）。
