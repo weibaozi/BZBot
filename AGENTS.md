@@ -8,7 +8,10 @@ myBot 是基于 Cortico 的自用陪伴 bot。开工前先读：
 
 ## 规则
 
-1. **不改 Cortico 源码**。`vendor/cortico` 是普通 clone（不是 submodule，原因见 docs/architecture.md 第 8 节），由 `scripts/m0-setup.ps1` 锁定在某个 commit。需要 Cortico 改动时，记录下来另行处理；我们的代码只写在 `packages/` 下的扩展包里。
+1. **不直接改 Cortico 源码**。`vendor/cortico` 是普通 clone（不是 submodule，原因见 docs/architecture.md 第 8 节），由 `scripts/m0-setup.ps1` 锁定在某个 commit。我们的代码写在 `packages/` 下的扩展包里。
+   - **唯一的例外是补丁文件**：确实需要改 Cortico 时，改动存成 `patches/cortico/NNNN-<名字>.patch`（`git diff` 导出，含测试），并在 `patches/cortico/README.md` 里登记用途和上游状态。安装脚本在锁定 commit 后按文件名顺序打上补丁。
+   - 补丁要写成能直接提给 Cortico 上游的样子：遵守它的 AGENTS.md，界面文案改齐 11 种语言，带测试。上游合并后删掉补丁、更新锁定的 commit。
+   - 改 `vendor/cortico` 里的补丁内容后，重新导出补丁文件；升级锁定的 commit 前，先 `git -C vendor/cortico checkout .` 去掉旧补丁再重跑脚本。
 2. **Cortico 改代码的规矩同样适用于我们的扩展**：遵守 `vendor/cortico/AGENTS.md` 和 `PHILOSOPHY.md` 的约定，尤其是"最小先验"（能用提示词约束的，就不写死控制流）和"诚实认知"（事件和回执只陈述能确认的事实）。
 3. **保护缓存**：会变的内容（时间、状态、检索结果、委派结果）只能追加到上下文末尾，不能放进前缀。见 [docs/architecture.md](docs/architecture.md) 第 3 节。
 4. **测试**：用真实的事件库、真实的 SQLite、真实的端口测。只有 LLM 和 embedding 可以用假数据。测试里不访问网络。
