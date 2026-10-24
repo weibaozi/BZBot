@@ -35,16 +35,26 @@ export class MemeSearch {
   private queries = new Map<string, number[]>();
   constructor(private library: MemeLibrary, private options: () => EmbeddingOptions, private embed: Embed = embedHttp) {}
   private fingerprint(options: EmbeddingOptions) { return hash(JSON.stringify([options.url.replace(/\/$/, ''), options.model, options.queryPrefix])); }
-  async build(signal?: AbortSignal): Promise<{ indexed: number; missingDescriptions: number }> {
+  async build(signal?: AbortSignal, settings: { force?: boolean; packId?: string; progress?: (done: number, total: number) => void } = { force: true }): Promise<{ indexed: number; missingDescriptions: number; generated: number }> {
     const options = this.options();
     if (!options.url || !options.model) throw new Error('Configure the embedding URL and model first');
     const entries = await this.library.entries();
     const eligible = entries.filter(e => e.searchable);
     if (!eligible.length) throw new Error('No images with usable semantic descriptions; import a semantic export');
-    const next: Index = { version: 1, fingerprint: this.fingerprint(options), dimension: 0, items: [] };
-    for (let offset = 0; offset < eligible.length; offset += 16) {
+    await this.state();
+    const previous = this.index?.fingerprint === this.fingerprint(options) ? this.index : undefined;
+    const next: Index = { version: 1, fingerprint: this.fingerprint(options), dimension: previous?.dimension ?? 0, items: [] };
+    const old = new Map(previous?.items.map(i => [i.id, i]) ?? []);
+    const pending = eligible.filter(e => {
+      const item = old.get(e.id); const inScope = !settings.packId || e.packId === settings.packId;
+      if (item && item.textHash === hash(semanticText(e)) && (!settings.force || !inScope)) { next.items.push(item); return false; }
+      return inScope;
+    });
+    if (settings.force && !settings.packId) next.dimension = 0;
+    settings.progress?.(0, pending.length);
+    for (let offset = 0; offset < pending.length; offset += 16) {
       signal?.throwIfAborted();
-      const batch = eligible.slice(offset, offset + 16);
+      const batch = pending.slice(offset, offset + 16);
       const vectors = await this.embed(batch.map(semanticText), options, signal);
       if (vectors.length !== batch.length) throw new Error('Embedding batch count mismatch');
       for (let i = 0; i < batch.length; i++) {
@@ -53,24 +63,29 @@ export class MemeSearch {
         if (vector.length !== next.dimension) throw new Error('Embedding dimensions changed during indexing');
         next.items.push({ id: batch[i].id, textHash: hash(semanticText(batch[i])), vector });
       }
+      settings.progress?.(Math.min(offset + 16, pending.length), pending.length);
     }
     signal?.throwIfAborted();
     await this.library.saveIndex(next);
     this.index = next; this.queries.clear();
-    return { indexed: next.items.length, missingDescriptions: entries.length - eligible.length };
+    return { indexed: next.items.length, missingDescriptions: entries.length - eligible.length, generated: pending.length };
   }
   async state() {
     try { this.index ??= JSON.parse(await readFile(join(this.library.dir, 'index.json'), 'utf8')) as Index; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    return { indexed: this.index?.items.length ?? 0, compatible: this.index?.fingerprint === this.fingerprint(this.options()) };
+    const entries = new Map((await this.library.entries()).filter(e => e.searchable).map(e => [e.id, e]));
+    const compatible = this.index?.fingerprint === this.fingerprint(this.options());
+    const valid = compatible ? this.index?.items.filter(i => { const e = entries.get(i.id); return e && hash(semanticText(e)) === i.textHash; }).length ?? 0 : 0;
+    return { indexed: this.index?.items.length ?? 0, valid, pending: entries.size - valid, compatible };
   }
   async search(query: string, topK: number, signal?: AbortSignal) {
     if (!query.trim() || query.length > 2000) throw new Error('Query must contain 1–2000 characters');
     const start = performance.now();
     const state = await this.state();
-    if (!state.indexed || !state.compatible || this.index?.version !== 1) throw new Error('Semantic index unavailable or model settings changed; build the index in QQ features');
+    if (!state.indexed || !state.compatible || this.index?.version !== 1) throw new Error('Semantic index unavailable or model settings changed; build the index in meme management');
     const index = this.index!;
-    const entries = new Map((await this.library.entries()).filter(e => e.searchable).map(e => [e.id, e]));
+    const enabled = new Set((await this.library.packs()).filter(p => p.enabled !== false).map(p => p.id));
+    const entries = new Map((await this.library.entries()).filter(e => e.searchable && enabled.has(e.packId)).map(e => [e.id, e]));
     const options = this.options();
     const key = hash(index.fingerprint + '\n' + query.trim());
     const cached = this.queries.has(key);

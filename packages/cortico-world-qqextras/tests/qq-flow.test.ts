@@ -19,7 +19,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
   writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
   const llm = new FakeLLM();
   const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm });
-  const { instance } = world(tmp.dir);
+  const { instance } = world(tmp.dir, undefined, async input => input.instruction.includes('检索词') ? { query: '抱抱安慰' } : { meme_id: (input.data as { candidates: Array<{ id: string }> }).candidates[0].id });
   try {
     await instance.library.importZip(await archive(tmp.dir), 'python'); await instance.search.build();
     const entry = (await instance.library.entries()).find(e => e.category === 'affection')!;
@@ -28,7 +28,7 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
     let stage = 0;
     llm.fallback = () => {
       stage++;
-      if (stage === 1) return toolReply([{ name: 'qqextras_search_memes', args: { query: '抱抱安慰' } }]);
+      if (stage === 1) return toolReply([{ name: 'qqextras_choose_meme', args: { reply: '给你一个抱抱' } }]);
       if (stage === 2) return toolReply([{ name: 'qqextras_get_meme', args: { id: entry.id } }]);
       if (stage === 3) {
         const history = JSON.stringify(llm.calls.at(-1)?.messages);

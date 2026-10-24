@@ -5,6 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import { QQEXTRAS_DEFAULTS } from '../config.ts';
 import { QqextrasWorld } from '../world.ts';
 import type { Embed } from '../server/search.ts';
+import type { Generate } from '../server/models.ts';
 export const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6SAAAAABJRU5ErkJggg==', 'base64');
 export async function archive(dir: string, extras: Record<string, string> = {}) {
   const files: Record<string, string> = {
@@ -20,11 +21,11 @@ export async function archive(dir: string, extras: Record<string, string> = {}) 
   return path;
 }
 export const embed: Embed = async texts => texts.map(t => t.includes('抱') ? [1, 0] : [0, 1]);
-export function world(dir: string, embedding = embed) {
+export function world(dir: string, embedding = embed, generate?: Generate) {
   const cfg = structuredClone(QQEXTRAS_DEFAULTS);
   cfg.memes.embeddingUrl = 'http://embedding.test/v1'; cfg.memes.embeddingModel = 'fixture-model';
   const instance = new QqextrasWorld({ id: 'qqextras', cfg, timezone: 'UTC', botName: 'fixture', botDir: dir, packageDir: dir,
     dataDir: join(dir, 'data'), repoRoot: dir, secret: () => '', storeSecret: () => { throw new Error('No secrets in fixture'); },
-    persist: () => { throw new Error('Unexpected configuration mutation'); }, restart: async () => {} }, embedding);
+    persist: () => { throw new Error('Unexpected configuration mutation'); }, restart: async () => {} }, embedding, generate);
   return { instance, cfg };
 }

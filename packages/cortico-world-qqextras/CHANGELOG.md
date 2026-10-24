@@ -1,5 +1,12 @@
 # `definition.ts` / `QqextrasWorld`
 
+## 0.3.0
+
+- Add management, semantic processing and mode settings tabs, with upload, category editing, batch moves, trash/restore and portable ZIP export.
+- Add incremental captions and vectors, progress, cancellation, failed-item retry and protection for concurrent manual edits.
+- Use an auxiliary model to generate a retrieval query and choose a candidate; allow abstention, pack selection, probability and bounded reference context.
+- Remove QQ-specific delivery instructions. Keep existing package/config/data identifiers for installed deployments; console images use Cortico patch 0003.
+
 ## 0.2.0
 
 - Port the AstrBot meme manager's visual styles and category/grid management flow to Cortico.

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import zipfile
 
@@ -67,6 +68,8 @@ def run(source, target):
             if entry.get('content_sha256') and entry['content_sha256'] != digest:
                 raise ValueError('Image hash differs from semantic metadata: ' + rel)
             category = str(entry.get('category') or pathlib.PurePosixPath(rel).parts[1])
+            if not category or len(category) > 100 or re.search(r'[\\/:\x00-\x1f]', category) or category in ('.', '..', '__proto__', 'constructor', 'prototype'):
+                raise ValueError('Invalid category')
             cat = manifest.get('categories', {}).get(category, {})
             description = cat.get('description', '') if isinstance(cat, dict) else str(cat)
             caption = str(entry.get('caption') or '')
@@ -81,12 +84,11 @@ def run(source, target):
                 dest.write_bytes(data)
             records.append({'id': hashlib.sha256(rel.encode()).hexdigest()[:24], 'file': 'images/' + dest.name,
                 'mime': EXTENSIONS[ext], 'category': category, 'categoryDescription': str(entry.get('category_description') or description),
-                'caption': caption, 'tags': tags, 'visibleText': str(entry.get('visible_text') or ''),
+                'caption': caption, 'tags': tags, 'visibleText': str(entry.get('visible_text') or ''), 'manual': bool(entry.get('manual_override', False)),
                 'searchable': bool(caption.strip()) and category not in ('needs_review', '_pending_review') and entry.get('category_fit') != 'conflict'})
-        if not records:
-            raise ValueError('No supported images in archive')
         pack = {'name': str(manifest.get('name') or manifest.get('id') or 'Imported pack'), 'sourceId': str(manifest.get('id') or ''),
-            'images': records, 'license': manifest.get('license', ''), 'author': manifest.get('author', '')}
+            'images': records, 'categories': {str(k): str(v.get('description', '') if isinstance(v, dict) else v) for k, v in manifest.get('categories', {}).items()},
+            'license': manifest.get('license', ''), 'author': manifest.get('author', '')}
         (target / 'pack.json').write_text(json.dumps(pack, ensure_ascii=False), encoding='utf-8')
         # Preserve attribution and the source metadata for later migration; no FAISS deserialization.
         for name in ('manifest.json', 'semantic_metadata.json', 'LICENSE'):
