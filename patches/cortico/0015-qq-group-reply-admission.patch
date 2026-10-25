@@ -1,0 +1,429 @@
+diff --git a/src/worlds/qq/ENV_PROMPT.md b/src/worlds/qq/ENV_PROMPT.md
+index b0dd470..71ea59f 100644
+--- a/src/worlds/qq/ENV_PROMPT.md
++++ b/src/worlds/qq/ENV_PROMPT.md
+@@ -7,3 +7,5 @@
+ 发送回复使用 qq_send：一次提交文字和图片，直接发送，不需要 qq_confirm。插件先发文字，再单独发图。qq_draft / qq_confirm 是旧版兼容工具，新回复不要使用。
+ 
+ 群聊需要真正 @ 某人时，给 qq_send 传有序 messages 数组，例如 [{"type":"plain","text":"早上好，特别是"},{"type":"mention_user","mention_user_id":"上下文中的实际QQ号"},{"type":"plain","text":"，今天也要开心！"}]。可以在句中多次穿插 mention_user，必须使用上下文里确认的 QQ 号，不猜号码。messages 和 text 二选一，普通文字继续用 text；文字里的 @昵称 不会产生提醒。私聊不用 mention_user。图片仍放在同一次调用的 image 参数里，文字（含 @）按分段设置先发送，图片最后单独发送。
++
++群聊默认只在本地归档。你收到 qq.group_context 时，里面是该群概率触发或被 @ 触发后抽取的最近消息，不是每条消息都要求分别回复；结合当前话题回复即可。被 @ 触发时回应提及你的消息。需要更早记录时使用 qq_read_history / qq_grep_history，并指定该群会话；不要假定没出现在当前上下文的消息不存在。
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index 0da22ab..891eaee 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -86,3 +86,7 @@ JSON 分享卡片的来源名、内容标题和目标链接写入消息正文。
+ ## 有序消息链
+ 
+ `qq_send` 和兼容草稿工具接受 `messages`：`plain` 使用 `text`，`mention_user` 使用数字 QQ 号字符串 `mention_user_id`，按数组顺序发送。不能同时传非空 `text`。仅群聊支持提及，不接受全体成员或昵称寻址。旧 `text` 保持纯文字，`image` 仍在所有文字之后单独发送。分段规则保留 @ 的位置；若自定义提取或清理正则破坏提及，退回整条文字发送，避免丢失或重复 @。
++
++## 群聊回复
++
++群消息默认本地归档，不进入 session。`groupReply.probability` 默认 10（百分比），0 不随机触发，100 每条触发；`forceMention` 默认开启，被 @ 时绕过概率。触发后按群合并，只追加 `recentMessages`（默认 20）条最近聊天及其已完成附件；不混入其他群。私聊不变。原始群消息和补充事件不会随后搭便车或重启补投。语音概率命中时等待转写完成再触发。此前已进入 session 的对话保持原样，需要更多记录时用 QQ 历史工具读取。概率决定是否让模型处理，不能保证模型一定发送消息。
+diff --git a/src/worlds/qq/config.ts b/src/worlds/qq/config.ts
+index 0707b7b..e5d6f24 100644
+--- a/src/worlds/qq/config.ts
++++ b/src/worlds/qq/config.ts
+@@ -3,6 +3,9 @@ import type { Language } from '../../core/language.ts';
+ import type { VisionConfig } from './vision.ts';
+ import { text } from './strings.ts';
+ import { replyText } from './reply-strings.ts';
++import { GROUP_REPLY_DEFAULTS, type GroupReplyConfig } from './group-admission.ts';
++import { groupReplyConfigGroup } from './group-reply-config.ts';
++export { groupReplyConfigGroup };
+ import { segmentText } from './segment-strings.ts';
+ import type { SegmentConfig } from './segment.ts';
+ 
+@@ -15,6 +18,7 @@ export interface QQRosterEntry {
+ export const QQ_DEFAULTS = {
+   enabled: false,
+   quoteReply: false,
++  groupReply: GROUP_REPLY_DEFAULTS,
+   /** OneBot v11 协议端的正向 WS 地址 */
+   wsUrl: 'ws://127.0.0.1:3001',
+   groups: [] as QQRosterEntry[],
+@@ -132,6 +136,7 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+ export interface QQConfigSection {
+   enabled: boolean;
+   quoteReply: boolean;
++  groupReply: GroupReplyConfig;
+   /** 确认发送时按会话类型分段 */
+   segment: SegmentConfig;
+   /** OneBot v11 协议端的正向 WS 地址 */
+diff --git a/src/worlds/qq/definition.ts b/src/worlds/qq/definition.ts
+index 79cf9e9..14ab139 100644
+--- a/src/worlds/qq/definition.ts
++++ b/src/worlds/qq/definition.ts
+@@ -9,7 +9,7 @@ import { OpenRouterVLMClient } from './vlm.ts';
+ export const QQ: WorldDefinition<QQConfigSection> = {
+   id: 'qq',
+   label: 'QQ',
+-  defaults: () => ({ ...QQ_DEFAULTS, groups: [], privates: [], vision: { ...VISION_DEFAULTS }, segment: SEGMENT_DEFAULTS() }),
++  defaults: () => ({ ...QQ_DEFAULTS, groupReply: { ...QQ_DEFAULTS.groupReply }, groups: [], privates: [], vision: { ...VISION_DEFAULTS }, segment: SEGMENT_DEFAULTS() }),
+   create: (ctx) => {
+     const { cfg } = ctx;
+     // 辅助视觉依赖开关与密钥;没有它时,主模型收图则由 QQWorld 自己下载图片附件。
+@@ -39,6 +39,7 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+         vision,
+         resolveImage: ref => resolveSourceImage(ctx.botDir, ref),
+         quoteReply: () => cfg.quoteReply,
++        groupReply: () => cfg.groupReply,
+         segment: () => cfg.segment,
+         imageCapture: cfg.vision,
+         gate: {
+@@ -87,6 +88,10 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+       },
+     }),
+     events: [
++      { type: 'qq.group_context', description: {
++        zh: '群聊概率命中或被 @ 后提取的最近消息，仅这些选中的上下文进入会话。',
++        en: 'Recent group messages selected after a probability or mention trigger.',
++      } },
+       {
+         type: 'qq.message',
+         description: {
+diff --git a/src/worlds/qq/group-admission.ts b/src/worlds/qq/group-admission.ts
+new file mode 100644
+index 0000000..a6aa565
+--- /dev/null
++++ b/src/worlds/qq/group-admission.ts
+@@ -0,0 +1,80 @@
++import type { CandidateProjector, EventEnvelope, WorldHost } from '../../core/types.ts';
++
++export interface GroupReplyConfig { probability: number; recentMessages: number; forceMention: boolean }
++export const GROUP_REPLY_DEFAULTS: GroupReplyConfig = { probability: 10, recentMessages: 20, forceMention: true };
++
++/** Group originals stay in the event store; only selected, bounded batches enter the session. */
++export function groupAdmissionHost(host: WorldHost, config: () => GroupReplyConfig): WorldHost {
++  const waitingVoice = new Set<string>();
++  const groupId = (event: Pick<EventEnvelope, 'meta'>): number | undefined => {
++    const conv = event.meta?.conv as { kind?: string; id?: number } | undefined;
++    return conv?.kind === 'group' ? Number(conv.id) : undefined;
++  };
++  const recent = (id: number, limit: number): EventEnvelope[] => {
++    const picked: EventEnvelope[] = [];
++    let cursor = host.store.latestCursor();
++    while (cursor > 0 && picked.length < limit) {
++      const page = host.store.range({ source: 'qq', toCursor: cursor, limit: 200 });
++      if (!page.length) break;
++      for (let i = page.length - 1; i >= 0 && picked.length < limit; i--) {
++        const event = page[i];
++        if (groupId(event) === id && (event.type === 'qq.message' || event.type === 'qq.self')) picked.push(event);
++      }
++      cursor = page[0].cursor - 1;
++    }
++    return picked.reverse();
++  };
++  const project: CandidateProjector = candidates => {
++    const groups = new Map<number, number[]>();
++    candidates.forEach((candidate, index) => {
++      const id = (candidate.value as { id: number }).id;
++      const indexes = groups.get(id) ?? []; indexes.push(index); groups.set(id, indexes);
++    });
++    return [...groups].map(([id, candidateIndexes]) => {
++      const rows = recent(id, config().recentMessages);
++      const ids = new Set(rows.map(row => String(row.meta?.message_id)));
++      const first = rows[0]?.cursor ?? host.store.latestCursor();
++      const extras = host.store.range({ source: 'qq', fromCursor: first }).filter(event =>
++        groupId(event) === id && ids.has(String(event.meta?.message_id)) &&
++        ['qq.image', 'qq.vision', 'qq.transcript', 'qq.forward', 'qq.reply.uncaptured'].includes(event.type));
++      const context = [...rows, ...extras].sort((a, b) => a.cursor - b.cursor);
++      const forced = candidateIndexes.some(index => (candidates[index].value as { forced: boolean }).forced);
++      return { candidateIndexes, event: {
++        type: 'qq.group_context',
++        text: `[群 ${id}：最近 ${rows.length} 条消息；${forced ? '被 @ 触发，请回应提及你的消息' : '概率触发，可结合话题决定回复'}。以下为群聊原始内容]\n` + context.map(row => row.text).join('\n'),
++        meta: { conv: { kind: 'group', id }, forcedMention: forced, contextMessageCursors: rows.map(row => row.cursor) },
++        blobs: context.flatMap(row => row.blobs ?? []),
++      } };
++    });
++  };
++  const trigger = async (event: EventEnvelope, id: number, forced: boolean) => {
++    if (!host.pushCandidate) throw new Error('QQ group replies require the candidate delivery interface');
++    await host.pushCandidate({
++      sourceEvents: [{ type: 'qq.group_trigger', ts: event.ts, text: `Group reply selected for #${event.meta?.message_id}`,
++        meta: { conv: { kind: 'group', id }, message_id: event.meta?.message_id } }],
++      gateText: event.text, value: { id, forced }, project,
++    }, { trigger: forced ? 'flush' : 'debounce' });
++  };
++  const wrapped = Object.create(host) as WorldHost;
++  wrapped.pushEvent = async (event, options) => {
++    const id = groupId(event);
++    if (id === undefined || options?.deliver === false) return host.pushEvent(event, options);
++    const saved = await host.pushEvent(event, { ...options, deliver: false });
++    const key = `${id}:${event.meta?.message_id}`;
++    if (event.type === 'qq.message') {
++      const settings = config();
++      const forced = settings.forceMention && event.meta?.mentionedSelf === true;
++      const selected = forced || (settings.probability > 0 && Math.random() * 100 < settings.probability);
++      if (selected) {
++        if (options?.trigger === 'piggyback' && !forced) {
++          waitingVoice.add(key);
++          if (waitingVoice.size > 1000) waitingVoice.delete(waitingVoice.values().next().value!);
++        } else await trigger(saved, id, forced);
++      }
++    } else if (event.type === 'qq.transcript' && waitingVoice.delete(key)) {
++      await trigger(saved, id, false);
++    }
++    return saved;
++  };
++  return wrapped;
++}
+diff --git a/src/worlds/qq/group-reply-config.ts b/src/worlds/qq/group-reply-config.ts
+new file mode 100644
+index 0000000..63a9021
+--- /dev/null
++++ b/src/worlds/qq/group-reply-config.ts
+@@ -0,0 +1,89 @@
++import type { ConfigGroup } from '../../core/config-schema.ts';
++import type { Language } from '../../core/language.ts';
++const labels: Record<Language, string[]> = {
++  "zh": [
++    "群聊回复",
++    "随机回复概率",
++    "最近消息条数",
++    "被 @ 时强制回复",
++    "概率为 0 时普通消息不触发；强制 @ 开启时仍回应提及。原始消息只在本地归档，触发时提取最近消息。"
++  ],
++  "zh-Hant": [
++    "群聊回覆",
++    "隨機回覆機率",
++    "最近訊息數",
++    "被 @ 時強制回覆",
++    "機率為 0 時普通訊息不觸發；強制 @ 開啟時仍回應提及。原始訊息僅在本機歸檔，觸發時提取最近訊息。"
++  ],
++  "en": [
++    "Group replies",
++    "Random reply probability",
++    "Recent message count",
++    "Always respond when mentioned",
++    "Zero disables random triggers. Forced mentions bypass probability. Messages stay archived locally until recent context is selected."
++  ],
++  "ja": [
++    "グループ返信",
++    "ランダム返信確率",
++    "直近メッセージ数",
++    "メンション時に必ず応答",
++    "0 はランダム発火を無効にします。強制メンションは確率を無視します。通常はローカル保存し、発火時に直近履歴を渡します。"
++  ],
++  "ko": [
++    "그룹 답장",
++    "무작위 답장 확률",
++    "최근 메시지 수",
++    "멘션 시 항상 응답",
++    "0은 무작위 실행을 끕니다. 강제 멘션은 확률을 무시합니다. 평소에는 로컬에 보관하고 실행 시 최근 기록만 전달합니다."
++  ],
++  "fr": [
++    "Réponses de groupe",
++    "Probabilité de réponse",
++    "Nombre de messages récents",
++    "Répondre aux mentions",
++    "Zéro désactive les déclenchements aléatoires. Les mentions forcées ignorent la probabilité. Les messages restent archivés localement avant sélection."
++  ],
++  "de": [
++    "Gruppenantworten",
++    "Antwortwahrscheinlichkeit",
++    "Anzahl letzter Nachrichten",
++    "Auf Erwähnungen immer antworten",
++    "Null deaktiviert zufällige Auslöser. Erzwungene Erwähnungen umgehen die Wahrscheinlichkeit. Nachrichten bleiben bis zur Auswahl lokal archiviert."
++  ],
++  "es-419": [
++    "Respuestas de grupo",
++    "Probabilidad de respuesta",
++    "Cantidad de mensajes recientes",
++    "Responder siempre a menciones",
++    "Cero desactiva los disparadores aleatorios. Las menciones forzadas omiten la probabilidad. Los mensajes se archivan localmente hasta seleccionar contexto."
++  ],
++  "pt-BR": [
++    "Respostas em grupo",
++    "Probabilidade de resposta",
++    "Quantidade de mensagens recentes",
++    "Sempre responder a menções",
++    "Zero desativa gatilhos aleatórios. Menções forçadas ignoram a probabilidade. As mensagens ficam arquivadas localmente até a seleção."
++  ],
++  "it": [
++    "Risposte di gruppo",
++    "Probabilità di risposta",
++    "Numero di messaggi recenti",
++    "Rispondi sempre alle menzioni",
++    "Zero disattiva gli avvii casuali. Le menzioni forzate ignorano la probabilità. I messaggi restano archiviati localmente fino alla selezione."
++  ],
++  "ru": [
++    "Ответы в группах",
++    "Вероятность ответа",
++    "Число последних сообщений",
++    "Всегда отвечать на упоминания",
++    "Ноль отключает случайные вызовы. Принудительные упоминания обходят вероятность. Сообщения хранятся локально до выборки контекста."
++  ]
++};
++export function groupReplyConfigGroup(language: Language): ConfigGroup {
++ const t=labels[language];
++ return {id:'world:qq:group-reply',owner:'world:qq',schema:{type:'object',title:t[0],description:t[4],properties:{
++ 'worlds.qq.groupReply.probability':{type:'number',title:t[1],minimum:0,maximum:100,'x-suffix':'%','x-hot':true},
++ 'worlds.qq.groupReply.recentMessages':{type:'integer',title:t[2],minimum:1,maximum:200,'x-hot':true},
++ 'worlds.qq.groupReply.forceMention':{type:'boolean',title:t[3],'x-hot':true},
++ }}};
++}
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 41e8d3b..67f3cc5 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -50,8 +50,9 @@ import {
+ } from './normalize.ts';
+ import { VISION_DEFAULTS, type VisionConfig, type VisionService } from './vision.ts';
+ import { downloadImageBytes } from './image-download.ts';
+-import { qqConfigGroup, qqSegmentConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
++import { qqConfigGroup, qqSegmentConfigGroup, groupReplyConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
+ import { text } from './strings.ts';
++import { groupAdmissionHost, type GroupReplyConfig } from './group-admission.ts';
+ import { parseMessageChain, splitChain, chainText, type MentionTokens } from './message-chain.ts';
+ import { segmentDelayMs, type SegmentConfig, type SegmentRule } from './segment.ts';
+ 
+@@ -127,6 +128,7 @@ interface QQWorldDeps {
+   quoteReply?: () => boolean;
+   /** 按会话类型的分段发送规则,每次发送时读;没给就整条发。 */
+   segment?: () => SegmentConfig;
++  groupReply?: () => GroupReplyConfig;
+   /** 两段之间的停顿;测试换成记录时长、不真等。 */
+   sleep?: (ms: number) => Promise<void>;
+   vision?: VisionService;
+@@ -330,6 +332,7 @@ export class QQWorld implements World {
+     this.gate = deps?.gate;
+     this.quoteReply = deps?.quoteReply ?? (() => QQ_DEFAULTS.quoteReply);
+     this.segment = deps?.segment ?? null;
++    this.groupReply = deps?.groupReply;
+     this.sleep = deps?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+     this.watchedGroups = new Set(cfg.groups);
+     this.watchedPrivates = new Set(cfg.privates);
+@@ -337,6 +340,7 @@ export class QQWorld implements World {
+ 
+   private readonly gate?: QQGatePanelDeps;
+   private readonly quoteReply: () => boolean;
++  private readonly groupReply?: () => GroupReplyConfig;
+   private readonly segment: (() => SegmentConfig) | null;
+   private readonly sleep: (ms: number) => Promise<void>;
+ 
+@@ -551,7 +555,7 @@ export class QQWorld implements World {
+           ],
+         },
+       ],
+-      config: [qqConfigGroup(language), qqSegmentConfigGroup(language)],
++      config: [qqConfigGroup(language), groupReplyConfigGroup(language), qqSegmentConfigGroup(language)],
+       ...(this.vision ? { storage: [this.visionStorage(this.vision, language)] } : {}),
+     };
+   }
+@@ -704,7 +708,7 @@ export class QQWorld implements World {
+ 
+ 
+   async start(host: WorldHost): Promise<void> {
+-    this.host = host;
++    this.host = this.groupReply ? groupAdmissionHost(host, this.groupReply) : host;
+     this.log = host.log;
+     // 外挂视觉的用量自愿上报进 core 的成本账(不报就在成本页看不到)
+     this.vision?.setUsageSink((usage, model) =>
+@@ -981,6 +985,7 @@ export class QQWorld implements World {
+           message_id: msg.message_id,
+           user_id: msg.user_id,
+           sender_name: displayName,
++          mentionedSelf,
+           conv,
+         },
+         ...(blobs.length ? { blobs } : {}),
+diff --git a/tests/integration/qq-group-admission.test.ts b/tests/integration/qq-group-admission.test.ts
+new file mode 100644
+index 0000000..495ed85
+--- /dev/null
++++ b/tests/integration/qq-group-admission.test.ts
+@@ -0,0 +1,93 @@
++import { expect, it } from 'vitest';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { MockOneBot } from '../helpers/mock-onebot.ts';
++import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
++
++async function fixture() {
++ const tmp=makeTmpDir(),mock=new MockOneBot({port:0,groupId:424242,selfId:5000});
++ const port=await mock.start(),cfg=makeCfg(),llm=new FakeLLM();
++ cfg.worlds.qq={...cfg.worlds.qq,enabled:true,wsUrl:`ws://127.0.0.1:${port}`,groupReply:{probability:0,recentMessages:3,forceMention:true},
++ groups:[{id:424242,enabled:true},{id:424243,enabled:true}],privates:[{id:1001,enabled:true}]};
++ cfg.worlds.console.enabled=false;cfg.web.port=0;cfg.tick.dayIntervalMinutes=[999,999];cfg.tick.nightIntervalMinutes=null;
++ const memoryDir=join(tmp.dir,'memory');mkdirSync(memoryDir,{recursive:true});writeFileSync(join(memoryDir,'CONSTITUTION.md'),'Fixture persona');
++ const loaded=makeLoaded({config:cfg,rootDir:tmp.dir,memoryDir,dataDir:join(tmp.dir,'data')});
++ let bot=assembleBot(loaded,{llm});
++ bot.core.bus.setPaused(true);await bot.start();await bot.qqWorld!.waitReady(5000);
++ const group=async(text:string,mention=false,id=424242)=>{
++ const mid=mock.emitGroupMessage({user_id:1001,text,group_id:id,...(mention?{segments:[{type:'at',data:{qq:'5000'}},{type:'text',data:{text}}]}:{})});
++ await expect.poll(()=>bot.core.store.range({source:'qq'}).some(e=>e.type==='qq.message'&&e.meta?.message_id===mid)).toBe(true);
++ await sleep(20);return mid;
++ };
++ const done=async()=>{await bot.stop();await mock.close();tmp.cleanup();};
++ return {bot,cfg,llm,mock,group,done,async restart(){await bot.stop();bot=assembleBot(loaded,{llm});await bot.start();await bot.qqWorld!.waitReady(5000);bot.core.bus.setPaused(false);return bot;}};
++}
++
++it('archives zero-probability messages, keeps private delivery, and leaves history accessible',async()=>{
++ const {bot,cfg,llm,mock,group,done}=await fixture();
++ try{
++ cfg.worlds.qq.groupReply.forceMention=false;
++ await group('ARCHIVED_ONLY_A');await group('ARCHIVED_ONLY_B',true);
++ bot.core.bus.setPaused(false);
++ mock.emitPrivateMessage({user_id:1001,text:'PRIVATE_DELIVERED'});
++ await expect.poll(()=>JSON.stringify(llm.calls),{timeout:6000}).toContain('PRIVATE_DELIVERED');
++ expect(JSON.stringify(llm.calls)).not.toContain('ARCHIVED_ONLY_');
++ const rows=bot.core.store.range({source:'qq'}).filter(e=>e.meta?.conv&&(e.meta.conv as any).kind==='group'&&e.type==='qq.message');
++ expect(rows).toHaveLength(2);expect(rows.every(e=>e.contextDelivery==='archive-only')).toBe(true);
++ const result=await bot.qqWorld!.tools().find(t=>t.name==='qq_read_history')!.handler({conversation:'group:424242',limit:10},{role:'main',log:nullLogger()});
++ expect(JSON.stringify(result)).toContain('ARCHIVED_ONLY_A');
++ }finally{await done();}
++},15000);
++
++it('forced mention bypasses zero probability and delivers only the latest messages of that group',async()=>{
++ const {bot,llm,group,done}=await fixture();
++ try{
++ await group('OLD_EXCLUDED');await group('RECENT_A');await group('OTHER_GROUP',false,424243);await group('RECENT_B');await group('MENTION_TRIGGER',true);
++ bot.core.bus.setPaused(false);
++ await expect.poll(()=>JSON.stringify(llm.calls),{timeout:6000}).toContain('MENTION_TRIGGER');
++ const input=JSON.stringify(llm.calls);expect(input).toContain('RECENT_A');expect(input).toContain('RECENT_B');
++ expect(input).not.toContain('OLD_EXCLUDED');expect(input).not.toContain('OTHER_GROUP');
++ const events=bot.core.store.range({source:'qq'}).filter(e=>e.type==='qq.group_context');
++ expect(events).toHaveLength(1);expect(events[0].meta?.contextMessageCursors).toHaveLength(3);expect(events[0].meta?.forcedMention).toBe(true);
++ }finally{await done();}
++},15000);
++
++it('coalesces selected messages at 100 percent into one bounded group snapshot',async()=>{
++ const {bot,cfg,llm,group,done}=await fixture();
++ try{
++ cfg.worlds.qq.groupReply.probability=100;cfg.worlds.qq.groupReply.forceMention=false;
++ for(let i=0;i<8;i++)await group('BATCH_'+i);
++ bot.core.bus.setPaused(false);
++ await expect.poll(()=>JSON.stringify(llm.calls),{timeout:6000}).toContain('BATCH_7');
++ const input=JSON.stringify(llm.calls);expect(input).not.toContain('BATCH_4');expect(input).toContain('BATCH_5');
++ expect(bot.core.store.range({source:'qq'}).filter(e=>e.type==='qq.group_context')).toHaveLength(1);
++ }finally{await done();}
++},15000);
++
++it('does not replay unselected archived group messages after a restart',async()=>{
++ const f=await fixture();
++ try{
++ await f.group('DO_NOT_REPLAY_GROUP');
++ await f.restart();
++ f.mock.emitPrivateMessage({user_id:1001,text:'PRIVATE_AFTER_RESTART'});
++ await expect.poll(()=>JSON.stringify(f.llm.calls),{timeout:6000}).toContain('PRIVATE_AFTER_RESTART');
++ expect(JSON.stringify(f.llm.calls)).not.toContain('DO_NOT_REPLAY_GROUP');
++ }finally{await f.done();}
++},15000);
++
++it.each([0,100])('voice transcription follows the parent probability (%s percent)',async probability=>{
++ const f=await fixture();
++ try{
++ f.cfg.worlds.qq.groupReply.probability=probability;
++ f.mock.setActionHandler('fetch_ptt_text',()=>({data:{text:'TRANSCRIPT_GROUP_ONLY'}}));
++ const mid=f.mock.emitGroupMessage({user_id:1001,segments:[{type:'record',data:{file:'fixture-record'}}]});
++ await expect.poll(()=>f.bot.core.store.range({source:'qq'}).some(e=>e.type==='qq.transcript'&&e.meta?.message_id===mid),{timeout:5000}).toBe(true);
++ f.bot.core.bus.setPaused(false);
++ f.mock.emitPrivateMessage({user_id:1001,text:'VOICE_PRIVATE_CONTROL'});
++ await expect.poll(()=>JSON.stringify(f.llm.calls),{timeout:6000}).toContain('VOICE_PRIVATE_CONTROL');
++ if(probability)expect(JSON.stringify(f.llm.calls)).toContain('TRANSCRIPT_GROUP_ONLY');
++ else expect(JSON.stringify(f.llm.calls)).not.toContain('TRANSCRIPT_GROUP_ONLY');
++ }finally{await f.done();}
++},15000);
