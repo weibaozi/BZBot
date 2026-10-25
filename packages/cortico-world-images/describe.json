@@ -1,0 +1,25 @@
+{
+  "tools": [
+    {
+      "name": "images_generate",
+      "tags": [
+        "write"
+      ],
+      "description": "Generate a new image from a prompt when requested. Returns a blob handle, not a sent message. Use the current channel sending tool to send it; do not invent image handles. For existing memes use search_meme instead.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      }
+    }
+  ],
+  "events": []
+}

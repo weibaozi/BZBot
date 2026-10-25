@@ -20,6 +20,10 @@
 
 模型类型：
 
+生图使用 `image` 类型，与对话模型分开显示。插件通过 `ctx.models.generateImage(ref, prompt, { signal, timeoutSeconds })` 获取图片字节；配置选项使用 `x-options: models:image`。供应商可实现 `ProviderInstance.generateImage`（例如 Codex OAuth），其余支持生图的协议走 `/images/generations`。接口不自动发送图片，也不把图片模型设为主对话模型。
+
+`cortico-provider-codex` 提供独立浏览器 OAuth 登录：保存供应商后点「登录 Codex」，在运行 bot 的电脑上完成授权，回调端口为 1455。原 ChatGPT 供应商保留。`cortico-world-images` 从模型中心选择生图模型，提供 `images_generate`；返回的图片句柄交给当前渠道发送工具。生图支持情况以实际账号请求为准。
+
 | 类型 | 用途 | 调用方式 |
 |---|---|---|
 | `chat` 对话 | 主对话、做梦、给图片写描述（选支持图片输入的） | 现有协议模块的 `respond()`，和主对话走同一条路 |

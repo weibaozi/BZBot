@@ -1,0 +1,5 @@
+{
+  "extends": "../cortico-bot-mybot/tsconfig.json",
+  "compilerOptions": { "baseUrl": ".", "paths": { "cortico/*": ["../../vendor/cortico/src/*"], "vitest": ["../../vendor/cortico/node_modules/vitest"] } },
+  "include": ["index.ts", "server/**/*.ts", "tests/**/*.ts"]
+}

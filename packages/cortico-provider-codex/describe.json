@@ -1,0 +1,17 @@
+{
+  "provider": {
+    "protocols": [
+      "openai-responses"
+    ],
+    "auth": [
+      "oauth"
+    ],
+    "local": false,
+    "input": [
+      "text",
+      "image"
+    ],
+    "title": "Codex OAuth",
+    "description": "Browser sign-in for the Codex backend; account capabilities are verified by requests."
+  }
+}

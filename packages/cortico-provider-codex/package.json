@@ -1,0 +1,26 @@
+{
+  "name": "cortico-provider-codex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "./index.ts",
+  "description": "Codex browser OAuth, chat and image generation",
+  "keywords": [
+    "cortico-provider"
+  ],
+  "packageManager": "pnpm@12.15.0",
+  "cortico": {
+    "kind": "provider",
+    "api": 6,
+    "displayName": "Codex OAuth",
+    "webUiClient": "dist/webui.js",
+    "describe": "describe.json",
+    "tags": [
+      "unofficial-api"
+    ]
+  },
+  "dependencies": {
+    "jose": "^6.2.13"
+  }
+}

@@ -1,0 +1,456 @@
+diff --git a/src/providers/base.ts b/src/providers/base.ts
+index dcd186b..c0b6316 100644
+--- a/src/providers/base.ts
++++ b/src/providers/base.ts
+@@ -60,6 +60,7 @@ export interface ListedModel {
+ }
+ 
+ export interface ProviderInstance {
++  generateImage?(request: import('./image-generation.ts').ImageGenerationRequest): Promise<import('./image-generation.ts').ImageGenerationResult>;
+   client: BaseProvider;
+   /** Models the endpoint advertises (`GET /models`). */
+   listModels?(): Promise<ListedModel[]>;
+diff --git a/src/providers/image-generation.ts b/src/providers/image-generation.ts
+new file mode 100644
+index 0000000..a25eb71
+--- /dev/null
++++ b/src/providers/image-generation.ts
+@@ -0,0 +1,17 @@
++import type { LLMUsage } from '../core/types.ts';
++
++export interface ImageGenerationOptions { signal?: AbortSignal; size?: string; timeoutSeconds?: number }
++export interface ImageGenerationRequest extends ImageGenerationOptions { model: string; prompt: string }
++export interface ImageGenerationResult { images: Array<{ bytes: Uint8Array; mime: string }>; usage?: LLMUsage }
++
++/** Only image bytes are accepted; never follow a provider-supplied URL with credentials. */
++export function decodeGeneratedImage(value: unknown): { bytes: Uint8Array; mime: string } {
++  if (typeof value !== 'string' || !value.length || value.length > 48_000_000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value))
++    throw new Error('Invalid or oversized generated image');
++  const bytes = Buffer.from(value, 'base64');
++  const mime = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'image/png'
++    : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'image/jpeg'
++    : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp' : '';
++  if (!mime) throw new Error('Unsupported generated image format');
++  return { bytes, mime };
++}
+diff --git a/src/providers/model-hub.ts b/src/providers/model-hub.ts
+index 6fb284c..691f5fe 100644
+--- a/src/providers/model-hub.ts
++++ b/src/providers/model-hub.ts
+@@ -19,6 +19,8 @@ export interface ModelInfo {
+ }
+ 
+ export interface ModelHub {
++  /** Optional for compatibility with older hosts; new hosts expose image models separately. */
++  generateImage?(ref: string, prompt: string, options?: import('./image-generation.ts').ImageGenerationOptions): Promise<import('./image-generation.ts').ImageGenerationResult>;
+   /** 启用且协议模块支持其类型的模型;`image` 只留接受图片输入的对话模型。 */
+   list(type?: ModelType, filter?: { image?: boolean }): ModelInfo[];
+   /** 一次对话生成。`overrides` 只改这一次的生成参数,不改模型配置。 */
+@@ -54,7 +56,7 @@ export function outputText(generation: Generation): string {
+ 
+ /** `x-options` 的 `models:<类型>[:image]`:可选模型的引用表;不是这个前缀返回 null。 */
+ export function modelOptions(hub: ModelHub, kind: string): Array<{ value: string; label: string }> | null {
+-  const match = /^models:(chat|embedding|rerank|stt|tts)(:image)?$/.exec(kind);
++  const match = /^models:(chat|embedding|rerank|stt|tts|image)(:image)?$/.exec(kind);
+   if (!match) return null;
+   return hub.list(match[1] as ModelType, { image: Boolean(match[2]) }).map((m) => ({ value: m.ref, label: m.ref }));
+ }
+diff --git a/src/providers/models.ts b/src/providers/models.ts
+index bf3a464..5ec0498 100644
+--- a/src/providers/models.ts
++++ b/src/providers/models.ts
+@@ -5,6 +5,7 @@
+  * 密钥只在这里读,调用方拿不到。用量由调用方经自己的宿主上报(World 用 `host.reportUsage`,见 model-hub.ts 的 `generationUsage`)。
+  */
+ import { join } from 'node:path';
++import { decodeGeneratedImage, type ImageGenerationOptions, type ImageGenerationResult } from './image-generation.ts';
+ import type { ModelSpec } from '../core/types.ts';
+ import type { GenerateOptions, Generation } from '../core/generation.ts';
+ import { secretReader } from '../core/secrets.ts';
+@@ -16,6 +17,23 @@ import { readModels, type ModelType, type StoredModel } from './store.ts';
+ import type { ChatOptions, ModelHub, ModelInfo } from './model-hub.ts';
+ 
+ export class ProviderModels implements ModelHub {
++  async generateImage(ref: string, prompt: string, options: ImageGenerationOptions = {}): Promise<ImageGenerationResult> {
++    if (!prompt.trim() || prompt.length > 32000) throw new Error('Image prompt must contain 1–32000 characters');
++    const seconds = options.timeoutSeconds ?? 180;
++    if (!Number.isFinite(seconds) || seconds < 1 || seconds > 3600) throw new Error('Image timeout must be 1–3600 seconds');
++    const model = this.find(ref, 'image');
++    const signal = AbortSignal.any([AbortSignal.timeout(seconds * 1000), ...(options.signal ? [options.signal] : [])]);
++    const instance = this.registry().preview(ref, model.entry, true);
++    if (instance.generateImage) return instance.generateImage({ ...options, model: this.modelName(model), prompt, signal });
++    const res = await this.fetchImpl(model.entry.baseUrl.replace(/\/+$/, '') + '/images/generations', {
++      method: 'POST', redirect: 'error', headers: this.headers(model, true), signal,
++      body: JSON.stringify({ model: this.modelName(model), prompt, n: 1, ...(options.size ? { size: options.size } : {}) }),
++    });
++    if (!res.ok) throw new Error(`${ref} image generation failed (HTTP ${res.status})`);
++    const body = await res.json() as { data?: Array<{ b64_json?: string }> };
++    if (!body.data?.length || body.data.length > 4) throw new Error('Image generation returned no usable images');
++    return { images: body.data.map(item => decodeGeneratedImage(item.b64_json)) };
++  }
+   constructor(
+     private readonly root: string,
+     /** 惰性取得:World 在 Core 之前构造,调用发生在启动之后。 */
+diff --git a/src/providers/openai-responses-compat/index.ts b/src/providers/openai-responses-compat/index.ts
+index 49c6884..8f6197f 100644
+--- a/src/providers/openai-responses-compat/index.ts
++++ b/src/providers/openai-responses-compat/index.ts
+@@ -57,7 +57,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
+ 
+ export default {
+   id: 'openai-responses-compat',
+-  modelTypes: ['chat', 'embedding', 'rerank', 'stt', 'tts'],
++  modelTypes: ['chat', 'embedding', 'rerank', 'stt', 'tts', 'image'],
+   title: 'OpenAI Responses Compatible',
+   description: 'Connect to Responses-compatible model services.',
+   describe: { protocols: ['openai-responses'], auth: ['api-key'], local: false, input: ['text', 'image'] },
+diff --git a/src/providers/store.ts b/src/providers/store.ts
+index abb44a3..20a52d4 100644
+--- a/src/providers/store.ts
++++ b/src/providers/store.ts
+@@ -13,7 +13,7 @@ import { readTextFile } from '../core/util.ts';
+ import { updateJsonObject } from '../config-file.ts';
+ import { modelOf, modelRef, sourceOf } from './name.ts';
+ 
+-export type ModelType = 'chat' | 'embedding' | 'rerank' | 'stt' | 'tts';
++export type ModelType = 'chat' | 'embedding' | 'rerank' | 'stt' | 'tts' | 'image';
+ 
+ /** 供应商下的一个模型。`type` 缺省为对话,`enabled` 缺省为启用。 */
+ export interface SourceModel {
+diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
+index ded91c2..6766472 100644
+--- a/src/providers/webui/hub.ts
++++ b/src/providers/webui/hub.ts
+@@ -379,12 +379,16 @@ export class ProviderHub {
+     });
+   }
+   /** 改供应商的地址;给了密钥就写进供应商的 `.env`,同一供应商的模型一起换钥。 */
+-  saveSource(name: string, input: { expectedRevision?: unknown; baseUrl?: unknown; secretValue?: unknown }, language: Language): void {
++  saveSource(name: string, input: { expectedRevision?: unknown; baseUrl?: unknown; secretValue?: unknown; options?: unknown }, language: Language): void {
+     this.locked(() => {
+       const secretValue = secretInput(input.secretValue);
+       let secret: string | undefined;
+       this.editSource(name, input.expectedRevision, source => {
+         if (typeof input.baseUrl === 'string') source.baseUrl = input.baseUrl;
++        if (input.options !== undefined) {
++          if (!input.options || typeof input.options !== 'object' || Array.isArray(input.options)) throw hubError(S => S.bodyRequired);
++          source.options = structuredClone(input.options as Record<string, unknown>);
++        }
+         if (secretValue && !source.secret) source.secret = defaultSecretName(name);
+         secret = source.secret;
+       }, language);
+@@ -476,6 +480,7 @@ export class ProviderHub {
+     try {
+       const detail = type === 'embedding' ? (await models.embed(ref, ['ping']))[0]?.length ?? 0
+         : type === 'rerank' ? (await models.rerank(ref, 'ping', ['ping', 'pong'])).length
++        : type === 'image' ? (await models.generateImage(ref, 'A small blue circle on a white background')).images.length
+         : (await models.speak(ref, 'ping')).bytes.length;
+       return { ok: true, elapsedMs: Date.now() - started, detail };
+     } catch (error) {
+diff --git a/src/web/client/features/providers/index.ts b/src/web/client/features/providers/index.ts
+index 4d9f67f..775b0d1 100644
+--- a/src/web/client/features/providers/index.ts
++++ b/src/web/client/features/providers/index.ts
+@@ -10,7 +10,7 @@ import { validateProviderName } from '../../../../providers/name.ts';
+ 
+ /** How often the page re-reads other deployments' usage and the saved sources. */
+ const REFRESH_MS = 5000;
+-const TYPES: readonly ModelType[] = ['chat', 'embedding', 'rerank', 'stt', 'tts'];
++const TYPES: readonly ModelType[] = ['chat', 'image', 'embedding', 'rerank', 'stt', 'tts'];
+ /** A context window as the model list shows it: 1000000 → 1M, 32768 → 33K. */
+ const compactTokens = (tokens: number) => tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : String(tokens);
+ /** A module without the address block signs in through its own panels instead of an address and key. */
+@@ -143,7 +143,18 @@ export async function mountProviders(ctx: FeatureContext): Promise<void> {
+         if (!card.el.isConnected) return;
+         const handle = await panelHost.mountConnection(`llm:${item.kind}`, section.id, card.body, { instance: item.name }, context => ({
+           ...context,
+-          setConfig: async () => { throw new Error('Foreign connection field'); },
++          setConfig: async (_group, values) => {
++            const options = { ...item.connection.options };
++            const prefix = `providers.${item.name}.options.`;
++            for (const [path, value] of Object.entries(values)) {
++              const key = path.startsWith(prefix) ? path.slice(prefix.length) : '';
++              if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(key) || ['constructor', 'prototype'].includes(key)) throw new Error('Foreign connection field');
++              options[key] = value;
++            }
++            await post(sourcePath(item.name) + '/save', { expectedRevision: item.revision, options }, opts);
++            await refresh();
++            return '';
++          },
+           invoke: async <T>(method: string, args?: unknown[]): Promise<T> =>
+             (await post<{ result: T }>('/api/provider-modules/preview', { name: item.name, entry: item.connection, panel: context.panelId, method, args }, opts)).result,
+           refresh: async () => {},
+diff --git a/src/web/client/features/providers/strings.de.ts b/src/web/client/features/providers/strings.de.ts
+index cc712e6..5959c65 100644
+--- a/src/web/client/features/providers/strings.de.ts
++++ b/src/web/client/features/providers/strings.de.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Pflichtfeld.', jsonObject: 'Gib ein gültiges JSON-Objekt ein.', jsonArray: 'Gib ein gültiges JSON-Array ein.',
+   unsaved: 'Als Entwurf behalten; wird beim Speichern geschrieben.',
+   deleteConfirm: 'Diese Verbindung und alle Dateien in ihrem Verzeichnis löschen?', referenced: 'Diese Verbindung wird von diesen Bots verwendet und kann nicht gelöscht werden: ', reload: 'Neu laden',
+-  types: { chat: 'Chat', embedding: 'Embedding', rerank: 'Neuordnung', stt: 'Sprache zu Text', tts: 'Text zu Sprache' },
++  types: { image: 'Bilderzeugung', chat: 'Chat', embedding: 'Embedding', rerank: 'Neuordnung', stt: 'Sprache zu Text', tts: 'Text zu Sprache' },
+   sources: 'Anbieter', newSource: 'Neuer Anbieter', removeSource: 'Anbieter löschen', back: '← Zurück',
+   activeModel: 'Chatmodell dieser Bereitstellung', legacyNote: 'Dies ist ein Endpunkt im alten Format. Beim Hinzufügen eines Modells wird er in einen Anbieter umgewandelt, und Bereitstellungen, die ihn verwenden, werden angepasst.',
+   models: 'Modelle', configured: 'Eingerichtete Modelle', available: 'Verfügbare Modelle', noConfigured: 'Noch keine Modelle dieses Typs. Rufe die Modellliste ab und wähle Hinzufügen, oder gib eine Modell-ID ein.',
+   customModelId: 'Eigene Modell-ID', addModel: 'Hinzufügen', enabled: 'Aktiv', modelSettings: 'Modelleinstellungen', removeModel: 'Modell löschen',
+   typeUnsupported: (type: string) => `Das Protokoll dieses Anbieters unterstützt keine ${type}-Modelle.`,
+   signInAfterSave: 'Dieser Typ meldet sich mit einem Konto statt mit Adresse und Schlüssel an; melden Sie sich nach dem Speichern auf der Anbieterseite an.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} Dimensionen`, rerank: (n: number) => `${n} Ergebnisse`, stt: () => '', tts: (n: number) => `${n} Byte Audio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} Dimensionen`, rerank: (n: number) => `${n} Ergebnisse`, stt: () => '', tts: (n: number) => `${n} Byte Audio` },
+ };
+diff --git a/src/web/client/features/providers/strings.es-419.ts b/src/web/client/features/providers/strings.es-419.ts
+index b61cb72..79b4404 100644
+--- a/src/web/client/features/providers/strings.es-419.ts
++++ b/src/web/client/features/providers/strings.es-419.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Obligatorio.', jsonObject: 'Ingresa un objeto JSON válido.', jsonArray: 'Ingresa un arreglo JSON válido.',
+   unsaved: 'Guardado como borrador; se escribe al guardar.',
+   deleteConfirm: '¿Eliminar esta conexión y todos los archivos de su directorio?', referenced: 'Estos bots usan esta conexión, así que no se puede eliminar: ', reload: 'Recargar',
+-  types: { chat: 'Chat', embedding: 'Embedding', rerank: 'Reordenamiento', stt: 'Voz a texto', tts: 'Texto a voz' },
++  types: { image: 'Generación de imágenes', chat: 'Chat', embedding: 'Embedding', rerank: 'Reordenamiento', stt: 'Voz a texto', tts: 'Texto a voz' },
+   sources: 'Proveedores', newSource: 'Nuevo proveedor', removeSource: 'Eliminar proveedor', back: '← Volver',
+   activeModel: 'Modelo de chat de este despliegue', legacyNote: 'Este es un endpoint con el formato anterior. Al agregar un modelo se convierte en proveedor y se actualizan los despliegues que lo usan.',
+   models: 'Modelos', configured: 'Modelos configurados', available: 'Modelos disponibles', noConfigured: 'Todavía no hay modelos de este tipo. Obtén la lista de modelos y elige Agregar, o escribe un id de modelo.',
+   customModelId: 'Id de modelo personalizado', addModel: 'Agregar', enabled: 'Activado', modelSettings: 'Ajustes del modelo', removeModel: 'Eliminar modelo',
+   typeUnsupported: (type: string) => `El protocolo de este proveedor no admite modelos ${type}.`,
+   signInAfterSave: 'Este tipo inicia sesión con una cuenta en lugar de una dirección y una clave; inicia sesión en la página del proveedor después de guardar.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensiones`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de audio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} dimensiones`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de audio` },
+ };
+diff --git a/src/web/client/features/providers/strings.fr.ts b/src/web/client/features/providers/strings.fr.ts
+index 6e37444..d9cbbdf 100644
+--- a/src/web/client/features/providers/strings.fr.ts
++++ b/src/web/client/features/providers/strings.fr.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Obligatoire.', jsonObject: 'Saisissez un objet JSON valide.', jsonArray: 'Saisissez un tableau JSON valide.',
+   unsaved: "Conservé comme brouillon ; écrit à l'enregistrement.",
+   deleteConfirm: 'Supprimer cette connexion et tous les fichiers de son répertoire ?', referenced: 'Cette connexion est utilisée par ces bots et ne peut pas être supprimée : ', reload: 'Recharger',
+-  types: { chat: 'Conversation', embedding: 'Embedding', rerank: 'Reclassement', stt: 'Parole vers texte', tts: 'Texte vers parole' },
++  types: { image: 'Génération d’images', chat: 'Conversation', embedding: 'Embedding', rerank: 'Reclassement', stt: 'Parole vers texte', tts: 'Texte vers parole' },
+   sources: 'Fournisseurs', newSource: 'Nouveau fournisseur', removeSource: 'Supprimer le fournisseur', back: '← Retour',
+   activeModel: 'Modèle de conversation de ce déploiement', legacyNote: "C'est un point de terminaison à l'ancien format. Ajouter un modèle le convertit en fournisseur et met à jour les déploiements qui y font référence.",
+   models: 'Modèles', configured: 'Modèles configurés', available: 'Modèles disponibles', noConfigured: "Aucun modèle de ce type pour l'instant. Récupérez la liste des modèles et choisissez Ajouter, ou saisissez un identifiant de modèle.",
+   customModelId: 'Identifiant de modèle personnalisé', addModel: 'Ajouter', enabled: 'Activé', modelSettings: 'Réglages du modèle', removeModel: 'Supprimer le modèle',
+   typeUnsupported: (type: string) => `Le protocole de ce fournisseur ne prend pas en charge les modèles ${type}.`,
+   signInAfterSave: 'Ce type se connecte avec un compte plutôt qu’une adresse et une clé ; connectez-vous sur la page du fournisseur après l’enregistrement.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} résultats`, stt: () => '', tts: (n: number) => `${n} octets audio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} résultats`, stt: () => '', tts: (n: number) => `${n} octets audio` },
+ };
+diff --git a/src/web/client/features/providers/strings.it.ts b/src/web/client/features/providers/strings.it.ts
+index f0e9f46..c6e3435 100644
+--- a/src/web/client/features/providers/strings.it.ts
++++ b/src/web/client/features/providers/strings.it.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Obbligatorio.', jsonObject: 'Inserisci un oggetto JSON valido.', jsonArray: 'Inserisci un array JSON valido.',
+   unsaved: 'Conservato come bozza; scritto al salvataggio.',
+   deleteConfirm: 'Eliminare questa connessione e tutti i file nella sua directory?', referenced: 'Questa connessione è usata da questi bot e non può essere eliminata: ', reload: 'Ricarica',
+-  types: { chat: 'Chat', embedding: 'Embedding', rerank: 'Riordinamento', stt: 'Voce in testo', tts: 'Testo in voce' },
++  types: { image: 'Generazione immagini', chat: 'Chat', embedding: 'Embedding', rerank: 'Riordinamento', stt: 'Voce in testo', tts: 'Testo in voce' },
+   sources: 'Fornitori', newSource: 'Nuovo fornitore', removeSource: 'Elimina fornitore', back: '← Indietro',
+   activeModel: 'Modello di chat di questo deployment', legacyNote: "Questo è un endpoint nel vecchio formato. Aggiungendo un modello viene convertito in fornitore e i deployment che lo usano vengono aggiornati.",
+   models: 'Modelli', configured: 'Modelli configurati', available: 'Modelli disponibili', noConfigured: "Nessun modello di questo tipo. Recupera l'elenco dei modelli e scegli Aggiungi, oppure inserisci un id di modello.",
+   customModelId: 'Id modello personalizzato', addModel: 'Aggiungi', enabled: 'Attivo', modelSettings: 'Impostazioni del modello', removeModel: 'Elimina modello',
+   typeUnsupported: (type: string) => `Il protocollo di questo fornitore non supporta i modelli ${type}.`,
+   signInAfterSave: 'Questo tipo accede con un account invece di indirizzo e chiave; accedi nella pagina del provider dopo il salvataggio.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensioni`, rerank: (n: number) => `${n} risultati`, stt: () => '', tts: (n: number) => `${n} byte di audio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} dimensioni`, rerank: (n: number) => `${n} risultati`, stt: () => '', tts: (n: number) => `${n} byte di audio` },
+ };
+diff --git a/src/web/client/features/providers/strings.ja.ts b/src/web/client/features/providers/strings.ja.ts
+index 40a9265..d469e23 100644
+--- a/src/web/client/features/providers/strings.ja.ts
++++ b/src/web/client/features/providers/strings.ja.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: '必須項目です。', jsonObject: '有効な JSON オブジェクトを入力してください。', jsonArray: '有効な JSON 配列を入力してください。',
+   unsaved: '下書きとして保持中です。保存時に書き込まれます。',
+   deleteConfirm: 'この接続と、そのディレクトリ内のすべてのファイルを削除しますか？', referenced: 'この接続は次のボットで使用中のため削除できません：', reload: '再読み込み',
+-  types: { chat: 'チャット', embedding: '埋め込み', rerank: 'リランク', stt: '音声認識', tts: '音声合成' },
++  types: { image: '画像生成', chat: 'チャット', embedding: '埋め込み', rerank: 'リランク', stt: '音声認識', tts: '音声合成' },
+   sources: 'プロバイダー', newSource: '新しいプロバイダー', removeSource: 'プロバイダーを削除', back: '← 戻る',
+   activeModel: 'このデプロイのチャットモデル', legacyNote: 'これは旧形式のエンドポイントです。モデルを追加するとプロバイダー形式に変換され、参照しているデプロイも更新されます。',
+   models: 'モデル', configured: '設定済みのモデル', available: '利用可能なモデル', noConfigured: 'この種類のモデルはまだありません。モデル一覧を取得して「追加」を選ぶか、モデル ID を入力してください。',
+   customModelId: 'カスタムモデル ID', addModel: '追加', enabled: '有効', modelSettings: 'モデル設定', removeModel: 'モデルを削除',
+   typeUnsupported: (type: string) => `このプロバイダーのプロトコルは${type}モデルに対応していません。`,
+   signInAfterSave: 'この種類はアドレスとキーではなくアカウントでサインインします。保存後にプロバイダーのページでサインインしてください。',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} 次元`, rerank: (n: number) => `${n} 件の結果`, stt: () => '', tts: (n: number) => `${n} バイトの音声` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} 次元`, rerank: (n: number) => `${n} 件の結果`, stt: () => '', tts: (n: number) => `${n} バイトの音声` },
+ };
+diff --git a/src/web/client/features/providers/strings.ko.ts b/src/web/client/features/providers/strings.ko.ts
+index 4b5d53a..12ad3ff 100644
+--- a/src/web/client/features/providers/strings.ko.ts
++++ b/src/web/client/features/providers/strings.ko.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: '필수 항목입니다.', jsonObject: '올바른 JSON 객체를 입력하세요.', jsonArray: '올바른 JSON 배열을 입력하세요.',
+   unsaved: '초안으로 보관 중이며 저장할 때 기록됩니다.',
+   deleteConfirm: '이 연결과 디렉터리 안의 모든 파일을 삭제하시겠습니까?', referenced: '이 연결은 다음 봇에서 사용 중이라 삭제할 수 없습니다: ', reload: '다시 불러오기',
+-  types: { chat: '대화', embedding: '임베딩', rerank: '재정렬', stt: '음성 인식', tts: '음성 합성' },
++  types: { image: '이미지 생성', chat: '대화', embedding: '임베딩', rerank: '재정렬', stt: '음성 인식', tts: '음성 합성' },
+   sources: '공급자', newSource: '새 공급자', removeSource: '공급자 삭제', back: '← 뒤로',
+   activeModel: '이 배포의 대화 모델', legacyNote: '이전 형식의 엔드포인트입니다. 모델을 추가하면 공급자 형식으로 바뀌고 이를 참조하는 배포도 함께 갱신됩니다.',
+   models: '모델', configured: '설정된 모델', available: '사용 가능한 모델', noConfigured: '이 종류의 모델이 아직 없습니다. 모델 목록을 가져와 "추가"를 누르거나 모델 ID를 입력하세요.',
+   customModelId: '사용자 지정 모델 ID', addModel: '추가', enabled: '사용', modelSettings: '모델 설정', removeModel: '모델 삭제',
+   typeUnsupported: (type: string) => `이 공급자의 프로토콜은 ${type} 모델을 지원하지 않습니다.`,
+   signInAfterSave: '이 유형은 주소와 키 대신 계정으로 로그인합니다. 저장한 뒤 공급자 페이지에서 로그인하세요.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n}차원`, rerank: (n: number) => `결과 ${n}개`, stt: () => '', tts: (n: number) => `오디오 ${n}바이트` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n}차원`, rerank: (n: number) => `결과 ${n}개`, stt: () => '', tts: (n: number) => `오디오 ${n}바이트` },
+ };
+diff --git a/src/web/client/features/providers/strings.pt-BR.ts b/src/web/client/features/providers/strings.pt-BR.ts
+index 008632c..82f8d59 100644
+--- a/src/web/client/features/providers/strings.pt-BR.ts
++++ b/src/web/client/features/providers/strings.pt-BR.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Obrigatório.', jsonObject: 'Digite um objeto JSON válido.', jsonArray: 'Digite um array JSON válido.',
+   unsaved: 'Guardado como rascunho; gravado ao salvar.',
+   deleteConfirm: 'Excluir esta conexão e todos os arquivos do diretório dela?', referenced: 'Esta conexão é usada por estes bots e não pode ser excluída: ', reload: 'Recarregar',
+-  types: { chat: 'Conversa', embedding: 'Embedding', rerank: 'Reordenação', stt: 'Fala para texto', tts: 'Texto para fala' },
++  types: { image: 'Geração de imagens', chat: 'Conversa', embedding: 'Embedding', rerank: 'Reordenação', stt: 'Fala para texto', tts: 'Texto para fala' },
+   sources: 'Provedores', newSource: 'Novo provedor', removeSource: 'Excluir provedor', back: '← Voltar',
+   activeModel: 'Modelo de conversa desta implantação', legacyNote: 'Este é um endpoint no formato antigo. Adicionar um modelo o converte em provedor e atualiza as implantações que o usam.',
+   models: 'Modelos', configured: 'Modelos configurados', available: 'Modelos disponíveis', noConfigured: 'Ainda não há modelos deste tipo. Busque a lista de modelos e escolha Adicionar, ou digite um id de modelo.',
+   customModelId: 'Id de modelo personalizado', addModel: 'Adicionar', enabled: 'Ativado', modelSettings: 'Configurações do modelo', removeModel: 'Excluir modelo',
+   typeUnsupported: (type: string) => `O protocolo deste provedor não oferece suporte a modelos ${type}.`,
+   signInAfterSave: 'Este tipo entra com uma conta em vez de endereço e chave; entre na página do provedor depois de salvar.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensões`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de áudio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} dimensões`, rerank: (n: number) => `${n} resultados`, stt: () => '', tts: (n: number) => `${n} bytes de áudio` },
+ };
+diff --git a/src/web/client/features/providers/strings.ru.ts b/src/web/client/features/providers/strings.ru.ts
+index b5bd958..131f319 100644
+--- a/src/web/client/features/providers/strings.ru.ts
++++ b/src/web/client/features/providers/strings.ru.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: 'Обязательное поле.', jsonObject: 'Введите корректный объект JSON.', jsonArray: 'Введите корректный массив JSON.',
+   unsaved: 'Сохранено как черновик; запишется при сохранении.',
+   deleteConfirm: 'Удалить это подключение и все файлы в его папке?', referenced: 'Это подключение используют следующие боты, поэтому удалить его нельзя: ', reload: 'Перезагрузить',
+-  types: { chat: 'Диалог', embedding: 'Эмбеддинги', rerank: 'Переранжирование', stt: 'Речь в текст', tts: 'Текст в речь' },
++  types: { image: 'Генерация изображений', chat: 'Диалог', embedding: 'Эмбеддинги', rerank: 'Переранжирование', stt: 'Речь в текст', tts: 'Текст в речь' },
+   sources: 'Поставщики', newSource: 'Новый поставщик', removeSource: 'Удалить поставщика', back: '← Назад',
+   activeModel: 'Модель диалога этого развёртывания', legacyNote: 'Это конечная точка в старом формате. При добавлении модели она станет поставщиком, а развёртывания, которые на неё ссылаются, будут обновлены.',
+   models: 'Модели', configured: 'Настроенные модели', available: 'Доступные модели', noConfigured: 'Моделей этого типа пока нет. Получите список моделей и нажмите «Добавить» или введите id модели.',
+   customModelId: 'Свой id модели', addModel: 'Добавить', enabled: 'Включена', modelSettings: 'Настройки модели', removeModel: 'Удалить модель',
+   typeUnsupported: (type: string) => `Протокол этого поставщика не поддерживает модели «${type}».`,
+   signInAfterSave: 'Этот тип входит через аккаунт, а не по адресу и ключу; войдите на странице провайдера после сохранения.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} измерений`, rerank: (n: number) => `${n} результатов`, stt: () => '', tts: (n: number) => `${n} байт аудио` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} измерений`, rerank: (n: number) => `${n} результатов`, stt: () => '', tts: (n: number) => `${n} байт аудио` },
+ };
+diff --git a/src/web/client/features/providers/strings.ts b/src/web/client/features/providers/strings.ts
+index fbd52b8..e68f3fa 100644
+--- a/src/web/client/features/providers/strings.ts
++++ b/src/web/client/features/providers/strings.ts
+@@ -38,14 +38,14 @@ const zh = {
+   required: '此项必填。', jsonObject: '请输入合法 JSON 对象。', jsonArray: '请输入合法 JSON 数组。',
+   unsaved: '已暂存；保存后写入配置。',
+   deleteConfirm: '删除供应商及其目录中的全部文件？', referenced: '此供应商正在被以下 Bot 使用，不能删除：', reload: '重新加载',
+-  types: { chat: '对话', embedding: '嵌入', rerank: '重排序', stt: '语音转文字', tts: '文字转语音' } as Record<string, string>,
++  types: { image: '生图', chat: '对话', embedding: '嵌入', rerank: '重排序', stt: '语音转文字', tts: '文字转语音' } as Record<string, string>,
+   sources: '供应商', newSource: '新增供应商', removeSource: '删除供应商', back: '← 返回',
+   activeModel: '当前部署的对话模型', legacyNote: '这是旧格式的端点；加模型时会转换成供应商格式，部署里的引用一并改好。',
+   models: '模型', configured: '已配置的模型', available: '可用模型', noConfigured: '这一类还没有模型。获取模型列表后点「添加」，或填写模型 id。',
+   customModelId: '自定义模型 id', addModel: '添加', enabled: '启用', modelSettings: '模型设置', removeModel: '删除模型',
+   typeUnsupported: (type: string) => `这个供应商的协议不支持${type}模型。`,
+   signInAfterSave: '这类供应商用账号登录，不填地址和 Key；保存后在供应商页登录。',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} 维`, rerank: (n: number) => `${n} 条结果`, stt: () => '', tts: (n: number) => `${n} 字节音频` } as Record<string, (n: number) => string>,
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} 维`, rerank: (n: number) => `${n} 条结果`, stt: () => '', tts: (n: number) => `${n} 字节音频` } as Record<string, (n: number) => string>,
+ };
+ export const en: typeof zh = {
+   modelDefault: 'Use model default', noThinking: 'No thinking (none)', customEffort: 'Custom reasoning effort',
+@@ -77,14 +77,14 @@ export const en: typeof zh = {
+   required: 'Required.', jsonObject: 'Enter a valid JSON object.', jsonArray: 'Enter a valid JSON array.',
+   unsaved: 'Kept as a draft; written on save.',
+   deleteConfirm: 'Delete this connection and all files in its directory?', referenced: 'This connection is used by these bots and cannot be deleted: ', reload: 'Reload',
+-  types: { chat: 'Chat', embedding: 'Embedding', rerank: 'Rerank', stt: 'Speech to text', tts: 'Text to speech' },
++  types: { image: 'Image generation', chat: 'Chat', embedding: 'Embedding', rerank: 'Rerank', stt: 'Speech to text', tts: 'Text to speech' },
+   sources: 'Providers', newSource: 'New provider', removeSource: 'Delete provider', back: '← Back',
+   activeModel: 'Chat model of this deployment', legacyNote: 'This is a legacy endpoint. Adding a model converts it to a provider and updates the deployments that reference it.',
+   models: 'Models', configured: 'Configured models', available: 'Available models', noConfigured: 'No models of this type yet. Fetch the model list and choose Add, or enter a model id.',
+   customModelId: 'Custom model id', addModel: 'Add', enabled: 'Enabled', modelSettings: 'Model settings', removeModel: 'Delete model',
+   typeUnsupported: (type: string) => `This provider's protocol does not support ${type} models.`,
+   signInAfterSave: 'This type signs in with an account instead of an address and key; sign in on the provider page after saving.',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} results`, stt: () => '', tts: (n: number) => `${n} bytes of audio` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} dimensions`, rerank: (n: number) => `${n} results`, stt: () => '', tts: (n: number) => `${n} bytes of audio` },
+ };
+ export const S = pick({
+   zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
+diff --git a/src/web/client/features/providers/strings.zh-Hant.ts b/src/web/client/features/providers/strings.zh-Hant.ts
+index 00e79db..fcfc3df 100644
+--- a/src/web/client/features/providers/strings.zh-Hant.ts
++++ b/src/web/client/features/providers/strings.zh-Hant.ts
+@@ -30,12 +30,12 @@ export const S: Partial<typeof en> = {
+   required: '此項必填。', jsonObject: '請輸入有效的 JSON 物件。', jsonArray: '請輸入有效的 JSON 陣列。',
+   unsaved: '已暫存；儲存後寫入設定。',
+   deleteConfirm: '刪除供應商及其目錄中的全部檔案？', referenced: '此供應商正在被以下 Bot 使用，不能刪除：', reload: '重新載入',
+-  types: { chat: '對話', embedding: '嵌入', rerank: '重新排序', stt: '語音轉文字', tts: '文字轉語音' },
++  types: { image: '生圖', chat: '對話', embedding: '嵌入', rerank: '重新排序', stt: '語音轉文字', tts: '文字轉語音' },
+   sources: '供應商', newSource: '新增供應商', removeSource: '刪除供應商', back: '← 返回',
+   activeModel: '目前部署的對話模型', legacyNote: '這是舊格式的端點；加入模型時會轉換成供應商格式，部署裡的引用一併更新。',
+   models: '模型', configured: '已設定的模型', available: '可用模型', noConfigured: '這一類還沒有模型。取得模型清單後點「加入」，或填寫模型 id。',
+   customModelId: '自訂模型 id', addModel: '加入', enabled: '啟用', modelSettings: '模型設定', removeModel: '刪除模型',
+   typeUnsupported: (type: string) => `這個供應商的協定不支援${type}模型。`,
+   signInAfterSave: '這類供應商以帳號登入，不填地址和 Key；儲存後在供應商頁面登入。',
+-  testDetail: { chat: () => '', embedding: (n: number) => `${n} 維`, rerank: (n: number) => `${n} 筆結果`, stt: () => '', tts: (n: number) => `${n} 位元組音訊` },
++  testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} 維`, rerank: (n: number) => `${n} 筆結果`, stt: () => '', tts: (n: number) => `${n} 位元組音訊` },
+ };
+diff --git a/tests/providers/image-generation.test.ts b/tests/providers/image-generation.test.ts
+new file mode 100644
+index 0000000..0f470bd
+--- /dev/null
++++ b/tests/providers/image-generation.test.ts
+@@ -0,0 +1,59 @@
++import { expect, it } from 'vitest';
++import { createServer } from 'node:http';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { makeTmpDir, makeCfg } from '../core/helpers.ts';
++import { ProviderHub } from '../../src/providers/webui/hub.ts';
++import { ProviderSettings } from '../../src/providers/webui/settings.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { ProviderRegistry } from '../../src/providers/registry.ts';
++import { ProviderModels } from '../../src/providers/models.ts';
++import { readProviders } from '../../src/providers/store.ts';
++import { modelOptions } from '../../src/providers/model-hub.ts';
++import { decodeGeneratedImage } from '../../src/providers/image-generation.ts';
++
++const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=';
++it('image models stay separate from chat and return authenticated image bytes', async () => {
++  const tmp = makeTmpDir(); let body: any, auth: unknown;
++  const server = createServer(async (req, res) => {
++    const chunks: Buffer[] = []; for await (const c of req) chunks.push(c);
++    body = JSON.parse(Buffer.concat(chunks).toString()); auth = req.headers.authorization;
++    res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ b64_json: png }] }));
++  });
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++  const root = join(tmp.dir, 'providers'); mkdirSync(join(root, 'local'), { recursive: true });
++  writeFileSync(join(root, 'local', 'config.json'), JSON.stringify({ kind: 'openai-responses-compat', baseUrl: `http://127.0.0.1:${(server.address() as any).port}`, secret: 'LOCAL_KEY', models: { draw: { type: 'image' }, disabled: { type: 'image', enabled: false } } }));
++  writeFileSync(join(root, 'local', '.env'), 'LOCAL_KEY=fixture-key');
++  const registry = new ProviderRegistry(() => readProviders(root), { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() });
++  try {
++    const hub = new ProviderModels(root, () => registry);
++    expect(readProviders(root)).toEqual({});
++    expect(modelOptions(hub, 'models:image')).toEqual([{ value: 'local/draw', label: 'local/draw' }]);
++    expect(hub.list('chat')).toEqual([]);
++    const result = await hub.generateImage('local/draw', 'a circle');
++    expect(result.images[0]).toEqual({ bytes: Buffer.from(png, 'base64'), mime: 'image/png' });
++    expect(body).toEqual({ model: 'draw', prompt: 'a circle', n: 1 }); expect(auth).toBe('Bearer fixture-key');
++    await expect(hub.generateImage('local/disabled', 'a circle')).rejects.toThrow('停用');
++    await expect(hub.generateImage('local/draw', '')).rejects.toThrow('prompt');
++    await expect(hub.generateImage('local/draw', 'a', { signal: AbortSignal.abort() })).rejects.toThrow();
++  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); tmp.cleanup(); }
++});
++it.each(['https://example.invalid/image.png', 'AAAA', 'bad!', ''])('rejects non-image result %s', value => {
++  expect(() => decodeGeneratedImage(value)).toThrow();
++});
++it('saves supplier options with revision protection and adds image models', () => {
++  const tmp = makeTmpDir(); const root = join(tmp.dir, 'providers'); mkdirSync(root);
++  const file = join(tmp.dir, 'config.json'); writeFileSync(file, '{}');
++  const cfg = makeCfg({ providers: {}, activeProvider: '' });
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() });
++  const hub = new ProviderHub(cfg, registry, new ProviderSettings(cfg, registry, file, root), file, root);
++  try {
++    hub.createSource({ name: 'local', kind: 'openai-responses-compat', baseUrl: 'https://example.invalid' }, 'en');
++    const revision = hub.sources('en').sources[0].revision;
++    hub.saveSource('local', { expectedRevision: revision, options: { imageControllerModel: 'controller' } }, 'en');
++    expect(hub.sources('en').sources[0].connection.options).toEqual({ imageControllerModel: 'controller' });
++    expect(() => hub.saveSource('local', { expectedRevision: revision, options: {} }, 'en')).toThrow('changed');
++    hub.addModels('local', { expectedRevision: hub.sources('en').sources[0].revision, models: [{ id: 'draw', type: 'image' }] }, 'en');
++    expect(hub.sources('en').sources[0].models[0].type).toBe('image');
++  } finally { tmp.cleanup(); }
++});
