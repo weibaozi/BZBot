@@ -25,15 +25,9 @@ export default { panels: { account: { async mount(ctx: WebUiPanelContext) {
   }) });
   const actions = ui.rowbar(); actions.append(login, cancel, logout, link);
   let state = await invoke<State>('state');
-  const controller = ui.input({ value: state.controllerModel });
-  controller.addEventListener('change', () => void call(async () => {
-    if (!controller.value.trim()) throw new Error(t('请输入主控模型名称', 'Enter a controller model'));
-    await ctx.setConfig('codex', { [`providers.${name}.options.imageControllerModel`]: controller.value.trim() });
-  }), { signal });
   root.append(status, actions,
     ui.msgline(t('在运行 myBot 的电脑上打开此管理页。授权后自动接收 localhost:1455 回调，不需要往 QQ 发链接。', 'Open this page on the myBot computer. Authorization returns to localhost:1455 automatically; no chat commands are needed.')),
-    ui.field(t('生图主控模型', 'Image controller model'), controller),
-    ui.msgline(t('生图页选择图片模型；这里选择调用图片工具的对话模型。模型列表是候选目录，账号能力以实际请求为准。', 'Choose the image model in the Image generation tab. This field selects the chat model that invokes the image tool. Catalog entries do not guarantee account access.')), error);
+    ui.msgline(t('在生图模型的「模型设置」里选择对应的文本模型。模型列表是候选目录，账号能力以实际请求为准。', 'Select the text model in each image model’s settings. Catalog entries do not guarantee account access.')), error);
   async function refresh() {
     state = await invoke<State>('state');
     status.textContent = state.signedIn ? t(`已登录 ${state.email ?? ''}`, `Signed in ${state.email ?? ''}`) : state.pending ? t('等待浏览器授权', 'Waiting for browser authorization') : t('尚未登录', 'Not signed in');

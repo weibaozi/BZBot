@@ -42,7 +42,7 @@ export class CodexClient extends BaseProvider {
     const signal = AbortSignal.any([this.auth.signal, AbortSignal.timeout((request.timeoutSeconds ?? 180) * 1000), ...(request.signal ? [request.signal] : [])]);
     const headers = await this.headers(signal);
     const response = await fetch(`${this.endpoint}/responses`, { method: 'POST', redirect: 'error', headers, signal,
-      body: JSON.stringify({ model: this.controllerModel(), instructions: 'Generate the requested image using the image generation tool.',
+      body: JSON.stringify({ model: request.controllerModel ?? this.controllerModel(), instructions: 'Generate the requested image using the image generation tool.',
         input: [{ role: 'user', content: [{ type: 'input_text', text: request.prompt }] }],
         tools: [{ type: 'image_generation', action: 'generate', model: request.model, ...(request.size ? { size: request.size } : {}) }],
         tool_choice: { type: 'image_generation' }, store: false, stream: true }) });

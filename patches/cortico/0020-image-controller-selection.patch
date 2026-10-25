@@ -1,0 +1,332 @@
+diff --git a/src/providers/base.ts b/src/providers/base.ts
+index c0b6316..75a59d2 100644
+--- a/src/providers/base.ts
++++ b/src/providers/base.ts
+@@ -99,6 +99,8 @@ export interface ProviderDescribe {
+ }
+ 
+ export interface ProviderModule {
++  /** Image models may select an enabled chat model from the same source as their controller. */
++  imageController?: boolean;
+   id: string;
+   title: string;
+   description?: string;
+diff --git a/src/providers/image-generation.ts b/src/providers/image-generation.ts
+index a25eb71..b06bd41 100644
+--- a/src/providers/image-generation.ts
++++ b/src/providers/image-generation.ts
+@@ -1,7 +1,7 @@
+ import type { LLMUsage } from '../core/types.ts';
+ 
+ export interface ImageGenerationOptions { signal?: AbortSignal; size?: string; timeoutSeconds?: number }
+-export interface ImageGenerationRequest extends ImageGenerationOptions { model: string; prompt: string }
++export interface ImageGenerationRequest extends ImageGenerationOptions { model: string; prompt: string; controllerModel?: string }
+ export interface ImageGenerationResult { images: Array<{ bytes: Uint8Array; mime: string }>; usage?: LLMUsage }
+ 
+ /** Only image bytes are accepted; never follow a provider-supplied URL with credentials. */
+diff --git a/src/providers/models.ts b/src/providers/models.ts
+index 5ec0498..d9c4fc1 100644
+--- a/src/providers/models.ts
++++ b/src/providers/models.ts
+@@ -22,9 +22,16 @@ export class ProviderModels implements ModelHub {
+     const seconds = options.timeoutSeconds ?? 180;
+     if (!Number.isFinite(seconds) || seconds < 1 || seconds > 3600) throw new Error('Image timeout must be 1–3600 seconds');
+     const model = this.find(ref, 'image');
++    let controllerModel: string | undefined;
++    if (model.imageController) {
++      const controller = this.find(model.imageController, 'chat');
++      if (controller.source !== model.source) throw new Error('Image controller must belong to the same provider');
++      controllerModel = this.modelName(controller);
++    }
+     const signal = AbortSignal.any([AbortSignal.timeout(seconds * 1000), ...(options.signal ? [options.signal] : [])]);
+     const instance = this.registry().preview(ref, model.entry, true);
+-    if (instance.generateImage) return instance.generateImage({ ...options, model: this.modelName(model), prompt, signal });
++    if (instance.generateImage) return instance.generateImage({ ...options, model: this.modelName(model), prompt, signal, controllerModel });
++    if (controllerModel) throw new Error('This provider does not support image controllers');
+     const res = await this.fetchImpl(model.entry.baseUrl.replace(/\/+$/, '') + '/images/generations', {
+       method: 'POST', redirect: 'error', headers: this.headers(model, true), signal,
+       body: JSON.stringify({ model: this.modelName(model), prompt, n: 1, ...(options.size ? { size: options.size } : {}) }),
+diff --git a/src/providers/store.ts b/src/providers/store.ts
+index 20a52d4..13b7242 100644
+--- a/src/providers/store.ts
++++ b/src/providers/store.ts
+@@ -17,6 +17,8 @@ export type ModelType = 'chat' | 'embedding' | 'rerank' | 'stt' | 'tts' | 'image
+ 
+ /** 供应商下的一个模型。`type` 缺省为对话,`enabled` 缺省为启用。 */
+ export interface SourceModel {
++  /** Enabled chat model reference in this source, used to invoke image tools. */
++  imageController?: string;
+   type?: ModelType;
+   enabled?: boolean;
+   spec?: ModelSpec;
+@@ -80,6 +82,7 @@ export function readProviders(root: string): Record<string, LLMProviderEntry> {
+ 
+ /** 目录里的一个模型,含非对话与停用的模型。`entry` 是调用它所需的供应商字段加这个模型的字段。 */
+ export interface StoredModel {
++  imageController?: string;
+   ref: string;
+   source: string;
+   model: string;
+@@ -100,9 +103,9 @@ export function readModels(root: string): StoredModel[] {
+     }
+     const { models, ...shared } = raw;
+     for (const [id, model] of Object.entries(models)) {
+-      const { type = 'chat', enabled = true, ...fields } = structuredClone(model);
++      const { type = 'chat', enabled = true, imageController, ...fields } = structuredClone(model);
+       if (fields.spec && !fields.spec.model) fields.spec.model = id;
+-      list.push({ ref: modelRef(source, id), source, model: id, type, enabled, entry: { ...structuredClone(shared), ...fields } });
++      list.push({ ref: modelRef(source, id), source, model: id, type, enabled, imageController, entry: { ...structuredClone(shared), ...fields } });
+     }
+   }
+   return list;
+diff --git a/src/providers/webui/hub.ts b/src/providers/webui/hub.ts
+index 6766472..7757529 100644
+--- a/src/providers/webui/hub.ts
++++ b/src/providers/webui/hub.ts
+@@ -320,11 +320,12 @@ export class ProviderHub {
+         connection: shared as LLMProviderEntry,
+         secretConfigured: this.settings.secretStatus(name, shared as LLMProviderEntry),
+         modelTypes: (module?.modelTypes ?? (module ? ['chat'] : [])) as readonly ModelType[],
++        imageController: module?.imageController === true,
+         models: Object.entries(models).map(([id, model]) => {
+           const ref = legacy ? name : modelRef(name, id);
+           const entry = this.config.providers[ref];
+           return { id, ref, type: model.type ?? 'chat', enabled: model.enabled !== false, model: model.spec?.model || id,
+-            multimodal: model.multimodal === true, contextWindow: model.spec?.contextWindow ?? null,
++            multimodal: model.multimodal === true, contextWindow: model.spec?.contextWindow ?? null, imageController: model.imageController ?? '',
+             active: ref === active, readiness: entry ? this.readiness(ref, entry, language) : null, usage: this.usage(ref) };
+         }),
+       };
+@@ -420,15 +421,27 @@ export class ProviderHub {
+     });
+   }
+   /** 启用或停用一个模型;有部署在用的模型不能停用。 */
+-  updateModel(name: string, id: string, input: { expectedRevision?: unknown; enabled?: unknown }, language: Language): void {
++  updateModel(name: string, id: string, input: { expectedRevision?: unknown; enabled?: unknown; imageController?: unknown }, language: Language): void {
+     this.locked(() => {
+       const enabled = input.enabled;
+-      if (typeof enabled !== 'boolean') throw hubError(S => S.bodyRequired);
++      if (enabled !== undefined && typeof enabled !== 'boolean') throw hubError(S => S.bodyRequired);
++      if (enabled === undefined && input.imageController === undefined) throw hubError(S => S.bodyRequired);
+       this.editSource(name, input.expectedRevision, (source, legacy) => {
+         const model = source.models[id];
+         if (!model) throw hubError(S => S.unknownModel, 404);
+-        if (!enabled) this.assertUnused(legacy ? name : modelRef(name, id));
+-        if (enabled) delete model.enabled; else model.enabled = false;
++        if (input.imageController !== undefined) {
++          const ref = input.imageController;
++          if (model.type !== 'image' || !this.modules.find(m => m.id === source.kind)?.imageController || typeof ref !== 'string') throw hubError(S => S.bodyRequired);
++          if (ref) {
++            const controller = Object.entries(source.models).find(([key]) => modelRef(name, key) === ref)?.[1];
++            if (!controller || (controller.type ?? 'chat') !== 'chat' || controller.enabled === false) throw hubError(S => S.unknownModel);
++            model.imageController = ref;
++          } else delete model.imageController;
++        }
++        if (enabled !== undefined) {
++          if (!enabled) this.assertUnused(legacy ? name : modelRef(name, id));
++          if (enabled) delete model.enabled; else model.enabled = false;
++        }
+       }, language);
+     });
+   }
+diff --git a/src/web/client/features/providers/index.ts b/src/web/client/features/providers/index.ts
+index 775b0d1..69d0ccc 100644
+--- a/src/web/client/features/providers/index.ts
++++ b/src/web/client/features/providers/index.ts
+@@ -255,6 +255,7 @@ export async function mountProviders(ctx: FeatureContext): Promise<void> {
+     const actions = ui.h('div', 'model-hub-model-actions');
+     actions.append(toggle, test);
+     if (model.type === 'chat') actions.append(iconButton('settings', S.modelSettings, () => openModel(model.ref)));
++    if (model.type === 'image' && item.imageController) actions.append(iconButton('settings', S.modelSettings, () => openImageModel(item, model)));
+     actions.append(iconButton('trash', S.removeModel, () => run(async () => {
+       if (!(await ui.confirm({ title: S.removeModel, body: model.ref, danger: true }))) return;
+       await post(sourceModelPath(item.name, model.id) + '/delete', { expectedRevision: item.revision }, opts); await refresh();
+@@ -290,6 +291,21 @@ export async function mountProviders(ctx: FeatureContext): Promise<void> {
+     newSourceForm(body);
+   }
+ 
++  function openImageModel(item: Source, model: SourceModel) {
++    dialog?.close();
++    const body = ui.h('div', 'model-hub-dialog'), line = ui.msgline();
++    const options = [{ value: '', label: S.modelDefault }, ...item.models.filter(m => m.type === 'chat' && m.enabled).map(m => ({ value: m.ref, label: m.ref }))];
++    if (model.imageController && !options.some(o => o.value === model.imageController)) options.push({ value: model.imageController, label: model.imageController + ` (${S.missing})` });
++    const select = ui.select({ value: model.imageController, options }); select.setAttribute('aria-label', S.imageController);
++    const layer = ui.drawer(model.ref, body);
++    const self = { close: () => { layer.dispose(); if (dialog === self) dialog = null; } }; dialog = self;
++    body.append(ui.field(S.imageController, select), ui.msgline(S.imageControllerHint), line,
++      ui.button(S.save, { variant: 'primary', onClick: () => run(async () => {
++        await post(sourceModelPath(item.name, model.id) + '/update', { expectedRevision: item.revision, imageController: select.value }, opts);
++        self.close(); await refresh();
++      }, line) }));
++  }
++
+   /** One chat model's settings in a dialog; the source page keeps the address, key and model list. */
+   function openModel(ref: string) {
+     dialog?.close();
+diff --git a/src/web/client/features/providers/strings.de.ts b/src/web/client/features/providers/strings.de.ts
+index 5959c65..4a5c3cf 100644
+--- a/src/web/client/features/providers/strings.de.ts
++++ b/src/web/client/features/providers/strings.de.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Textmodell", imageControllerHint: "Ein aktiviertes Chatmodell dieses Anbieters für die Bilderzeugung auswählen.",
+   modelDefault: "Modellstandard verwenden", noThinking: "Ohne Denkprozess (none)", customEffort: "Benutzerdefinierter Denkaufwand",
+   currentEffort: (value: string) => "Aktueller Wert: " + value, chooseSupportedEffort: "Wählen Sie einen vom Modell unterstützten Denkaufwand.",
+   pageTitle: 'Modellverbindungen', navLabel: 'Modellverbindungen', navGroup: 'Core', create: "+ Neuer Anbieter", newName: 'Unbenannte Instanz',
+diff --git a/src/web/client/features/providers/strings.es-419.ts b/src/web/client/features/providers/strings.es-419.ts
+index 79b4404..458edfb 100644
+--- a/src/web/client/features/providers/strings.es-419.ts
++++ b/src/web/client/features/providers/strings.es-419.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Modelo de texto", imageControllerHint: "Elige un modelo de chat habilitado de este proveedor para generar imágenes.",
+   modelDefault: "Usar valor predeterminado del modelo", noThinking: "Sin razonamiento (none)", customEffort: "Esfuerzo de razonamiento personalizado",
+   currentEffort: (value: string) => "Valor actual: " + value, chooseSupportedEffort: "Elige un esfuerzo de razonamiento compatible con este modelo.",
+   pageTitle: 'Conexiones de modelo', navLabel: 'Conexiones de modelo', navGroup: 'Core', create: "+ Nuevo proveedor", newName: 'Instancia sin nombre',
+diff --git a/src/web/client/features/providers/strings.fr.ts b/src/web/client/features/providers/strings.fr.ts
+index d9cbbdf..f5ba55f 100644
+--- a/src/web/client/features/providers/strings.fr.ts
++++ b/src/web/client/features/providers/strings.fr.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Modèle de texte", imageControllerHint: "Choisissez un modèle de conversation activé de ce fournisseur pour générer les images.",
+   modelDefault: "Valeur par défaut du modèle", noThinking: "Sans raisonnement (none)", customEffort: "Effort de raisonnement personnalisé",
+   currentEffort: (value: string) => "Valeur actuelle : " + value, chooseSupportedEffort: "Choisissez un effort de raisonnement pris en charge par ce modèle.",
+   pageTitle: 'Connexions de modèles', navLabel: 'Connexions de modèles', navGroup: 'Core', create: "+ Nouveau fournisseur", newName: 'Instance sans nom',
+diff --git a/src/web/client/features/providers/strings.it.ts b/src/web/client/features/providers/strings.it.ts
+index c6e3435..1db3519 100644
+--- a/src/web/client/features/providers/strings.it.ts
++++ b/src/web/client/features/providers/strings.it.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Modello di testo", imageControllerHint: "Scegli un modello di chat attivo di questo fornitore per generare immagini.",
+   modelDefault: "Usa il valore predefinito del modello", noThinking: "Senza ragionamento (none)", customEffort: "Sforzo di ragionamento personalizzato",
+   currentEffort: (value: string) => "Valore attuale: " + value, chooseSupportedEffort: "Scegli uno sforzo di ragionamento supportato da questo modello.",
+   pageTitle: 'Connessioni ai modelli', navLabel: 'Connessioni ai modelli', navGroup: 'Core', create: "+ Nuovo fornitore", newName: 'Istanza senza nome',
+diff --git a/src/web/client/features/providers/strings.ja.ts b/src/web/client/features/providers/strings.ja.ts
+index d469e23..2fbd17d 100644
+--- a/src/web/client/features/providers/strings.ja.ts
++++ b/src/web/client/features/providers/strings.ja.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "テキストモデル", imageControllerHint: "同じプロバイダーの有効なチャットモデルで画像生成ツールを呼び出します。",
+   modelDefault: "モデルの既定値を使用", noThinking: "思考なし（none）", customEffort: "推論の強さを指定",
+   currentEffort: (value: string) => "現在の値: " + value, chooseSupportedEffort: "このモデルが対応する推論の強さを選択してください。",
+   pageTitle: 'モデル接続', navLabel: 'モデル接続', navGroup: 'Core', create: "+ 新しいプロバイダー", newName: '名前のないインスタンス',
+diff --git a/src/web/client/features/providers/strings.ko.ts b/src/web/client/features/providers/strings.ko.ts
+index 12ad3ff..637c540 100644
+--- a/src/web/client/features/providers/strings.ko.ts
++++ b/src/web/client/features/providers/strings.ko.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "텍스트 모델", imageControllerHint: "이미지 생성 도구를 호출할 동일 공급자의 활성 채팅 모델을 선택하세요.",
+   modelDefault: "모델 기본값 사용", noThinking: "추론 안 함 (none)", customEffort: "사용자 지정 추론 강도",
+   currentEffort: (value: string) => "현재 값: " + value, chooseSupportedEffort: "이 모델이 지원하는 추론 강도를 선택하세요.",
+   pageTitle: '모델 연결', navLabel: '모델 연결', navGroup: 'Core', create: "+ 새 공급자", newName: '이름 없는 인스턴스',
+diff --git a/src/web/client/features/providers/strings.pt-BR.ts b/src/web/client/features/providers/strings.pt-BR.ts
+index 82f8d59..10352df 100644
+--- a/src/web/client/features/providers/strings.pt-BR.ts
++++ b/src/web/client/features/providers/strings.pt-BR.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Modelo de texto", imageControllerHint: "Escolha um modelo de chat ativo deste provedor para gerar imagens.",
+   modelDefault: "Usar padrão do modelo", noThinking: "Sem raciocínio (none)", customEffort: "Esforço de raciocínio personalizado",
+   currentEffort: (value: string) => "Valor atual: " + value, chooseSupportedEffort: "Escolha um esforço de raciocínio compatível com este modelo.",
+   pageTitle: 'Conexões de modelo', navLabel: 'Conexões de modelo', navGroup: 'Core', create: "+ Novo provedor", newName: 'Instância sem nome',
+diff --git a/src/web/client/features/providers/strings.ru.ts b/src/web/client/features/providers/strings.ru.ts
+index 131f319..affe491 100644
+--- a/src/web/client/features/providers/strings.ru.ts
++++ b/src/web/client/features/providers/strings.ru.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "Текстовая модель", imageControllerHint: "Выберите включённую модель чата этого провайдера для генерации изображений.",
+   modelDefault: "По умолчанию для модели", noThinking: "Без рассуждения (none)", customEffort: "Своя глубина рассуждения",
+   currentEffort: (value: string) => "Текущее значение: " + value, chooseSupportedEffort: "Выберите глубину рассуждения, поддерживаемую этой моделью.",
+   pageTitle: 'Подключения к моделям', navLabel: 'Подключения к моделям', navGroup: 'Core', create: "+ Новый поставщик", newName: 'Безымянный экземпляр',
+diff --git a/src/web/client/features/providers/strings.ts b/src/web/client/features/providers/strings.ts
+index e68f3fa..6f394d7 100644
+--- a/src/web/client/features/providers/strings.ts
++++ b/src/web/client/features/providers/strings.ts
+@@ -9,6 +9,7 @@ import { S as ptBR } from './strings.pt-BR.ts';
+ import { S as it } from './strings.it.ts';
+ import { S as ru } from './strings.ru.ts';
+ const zh = {
++  imageController: "对应的文本模型", imageControllerHint: "选择同一供应商下已启用的对话模型，用它调用生图工具。",
+   modelDefault: '使用模型默认值', noThinking: '不思考（none）', customEffort: '自定义推理强度',
+   currentEffort: (value: string) => `当前值：${value}`, chooseSupportedEffort: '请选择此模型支持的推理强度。',
+   pageTitle: '模型供应商', navLabel: '模型供应商', navGroup: 'Core', create: "+ 新增供应商", newName: '未命名实例',
+@@ -48,6 +49,7 @@ const zh = {
+   testDetail: { image: (n: number) => `${n} 🖼`, chat: () => '', embedding: (n: number) => `${n} 维`, rerank: (n: number) => `${n} 条结果`, stt: () => '', tts: (n: number) => `${n} 字节音频` } as Record<string, (n: number) => string>,
+ };
+ export const en: typeof zh = {
++  imageController: "Text model", imageControllerHint: "Choose an enabled chat model from this provider to invoke image generation.",
+   modelDefault: 'Use model default', noThinking: 'No thinking (none)', customEffort: 'Custom reasoning effort',
+   currentEffort: (value: string) => `Current value: ${value}`, chooseSupportedEffort: 'Choose a reasoning effort supported by this model.',
+   pageTitle: 'Model connections', navLabel: 'Model connections', navGroup: 'Core', create: "+ New provider", newName: 'Unnamed instance',
+diff --git a/src/web/client/features/providers/strings.zh-Hant.ts b/src/web/client/features/providers/strings.zh-Hant.ts
+index fcfc3df..1d342ba 100644
+--- a/src/web/client/features/providers/strings.zh-Hant.ts
++++ b/src/web/client/features/providers/strings.zh-Hant.ts
+@@ -1,6 +1,7 @@
+ import type { en } from './strings.ts';
+ 
+ export const S: Partial<typeof en> = {
++ imageController: "對應的文字模型", imageControllerHint: "選擇同一供應商下已啟用的對話模型來呼叫生圖工具。",
+   modelDefault: "使用模型預設值", noThinking: "不思考（none）", customEffort: "自訂推理強度",
+   currentEffort: (value: string) => "目前值：" + value, chooseSupportedEffort: "請選擇此模型支援的推理強度。",
+   pageTitle: '模型供應商', navLabel: '模型供應商', navGroup: 'Core', create: "+ 新增供應商", newName: '未命名實例',
+diff --git a/tests/providers/image-generation.test.ts b/tests/providers/image-generation.test.ts
+index 0f470bd..d2cd5fb 100644
+--- a/tests/providers/image-generation.test.ts
++++ b/tests/providers/image-generation.test.ts
+@@ -11,8 +11,34 @@ import { ProviderModels } from '../../src/providers/models.ts';
+ import { readProviders } from '../../src/providers/store.ts';
+ import { modelOptions } from '../../src/providers/model-hub.ts';
+ import { decodeGeneratedImage } from '../../src/providers/image-generation.ts';
++import type { ImageGenerationRequest } from '../../src/providers/image-generation.ts';
++import { BaseProvider, type ProviderModule } from '../../src/providers/base.ts';
+ 
+ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=';
++it('persists the selected text reference, resolves its model, and rejects missing or disabled controllers', async () => {
++  const tmp = makeTmpDir(); const root = join(tmp.dir, 'providers'); mkdirSync(root);
++  const file = join(tmp.dir, 'config.json'); writeFileSync(file, '{}');
++  const cfg = makeCfg({ providers: {}, activeProvider: '' }); let request: ImageGenerationRequest | undefined;
++  class ImageClient extends BaseProvider { async respond(): Promise<never> { throw new Error('Unexpected chat'); } }
++  const module: ProviderModule = { id: 'fixture', title: 'Fixture', reasoningTiers: [], serviceTiers: [], modelTypes: ['chat', 'image'], imageController: true,
++    create: () => ({ client: new ImageClient(), generateImage: async req => { request = req; return { images: [decodeGeneratedImage(png)] }; } }) };
++  const registry = new ProviderRegistry(() => cfg.providers, { stateRoot: root, readBlob: () => null, keepThinking: () => true, log: nullLogger() }, [module]);
++  const hub = new ProviderHub(cfg, registry, new ProviderSettings(cfg, registry, file, root, [module]), file, root, [module]);
++  const revision = () => hub.sources('en').sources[0].revision;
++  try {
++    hub.createSource({ name: 'local', kind: 'fixture', baseUrl: 'https://example.invalid' }, 'en');
++    hub.addModels('local', { expectedRevision: revision(), models: [{ id: 'draw', type: 'image' }, { id: 'text', type: 'chat' }] }, 'en');
++    for (const imageController of ['foreign/text', 'local/draw', 'local/missing']) expect(() => hub.updateModel('local', 'draw', { expectedRevision: revision(), imageController }, 'en')).toThrow();
++    hub.updateModel('local', 'draw', { expectedRevision: revision(), imageController: 'local/text' }, 'en');
++    expect(hub.sources('en').sources[0].models[0].imageController).toBe('local/text');
++    const models = new ProviderModels(root, () => registry, [module]); await models.generateImage('local/draw', 'circle');
++    expect(request).toMatchObject({ model: 'draw', controllerModel: 'text', prompt: 'circle' });
++    hub.updateModel('local', 'text', { expectedRevision: revision(), enabled: false }, 'en');
++    await expect(models.generateImage('local/draw', 'circle')).rejects.toThrow('停用');
++    hub.updateModel('local', 'draw', { expectedRevision: revision(), imageController: '' }, 'en');
++    await models.generateImage('local/draw', 'circle'); expect(request?.controllerModel).toBeUndefined();
++  } finally { tmp.cleanup(); }
++});
+ it('image models stay separate from chat and return authenticated image bytes', async () => {
+   const tmp = makeTmpDir(); let body: any, auth: unknown;
+   const server = createServer(async (req, res) => {

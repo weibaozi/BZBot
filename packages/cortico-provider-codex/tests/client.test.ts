@@ -30,9 +30,9 @@ it('uses independent OAuth for real HTTP chat and image requests and keeps contr
   try {
     expect((await client.respond({ model: 'chat-model', input: [], temperature: .6, max_output_tokens: 100 }, { sessionId: 'main' })).response.status).toBe('completed');
     expect(seen[0]).toMatchObject({ stream: true, store: false }); expect(seen[0]).not.toHaveProperty('temperature');
-    const images = await client.generateImage({ model: 'image-model', prompt: 'A blue circle' });
+    const images = await client.generateImage({ model: 'image-model', prompt: 'A blue circle', controllerModel: 'selected-text-model' });
     expect(images.images[0].mime).toBe('image/png'); expect(images.images[0].bytes.length).toBeGreaterThan(40);
-    expect(seen[1]).toMatchObject({ model: 'controller-model', tools: [{ type: 'image_generation', model: 'image-model', action: 'generate' }], tool_choice: { type: 'image_generation' } });
+    expect(seen[1]).toMatchObject({ model: 'selected-text-model', tools: [{ type: 'image_generation', model: 'image-model', action: 'generate' }], tool_choice: { type: 'image_generation' } });
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 

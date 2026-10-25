@@ -8,7 +8,7 @@ const catalog = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5
 export default {
   id: 'codex', title: 'Codex OAuth', description: 'Browser sign-in for the Codex backend; account capabilities are verified by requests.',
   describe: { protocols: ['openai-responses'], auth: ['oauth'], local: false, input: ['text', 'image'] },
-  modelTypes: ['chat', 'image'], defaultBaseUrl: CODEX_BASE_URL,
+  modelTypes: ['chat', 'image'], imageController: true, defaultBaseUrl: CODEX_BASE_URL,
   reasoningTiers: [], effortSuggestions: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], serviceTiers: [],
   normalize: entry => ({ ...entry, baseUrl: CODEX_BASE_URL, secret: undefined }),
   validateEntry: entry => {
@@ -17,10 +17,6 @@ export default {
   },
   availability: (name, _entry, language) => new CodexAuth(providerDir(name.split('/')[0]!)).status().signedIn
     ? { ready: true } : { ready: false, reason: language.startsWith('zh') ? '请在供应商页登录 Codex' : 'Sign in with Codex on the provider page' },
-  config: (name, _entry, language) => [{ id: `llm.codex.${name}.images`, owner: 'provider:codex', schema: { type: 'object',
-    title: language.startsWith('zh') ? 'Codex 生图' : 'Codex image generation', properties: {
-      [`providers.${name}.options.imageControllerModel`]: { type: 'string', title: language.startsWith('zh') ? '生图主控模型' : 'Image controller model', 'x-hot': true },
-    } } }],
   create(_name, entry, host) {
     const auth = host.resource?.('codex-auth', () => new CodexAuth(host.stateDir)) ?? new CodexAuth(host.stateDir);
     const client = new CodexClient(auth, host, () => entry.multimodal === true,
