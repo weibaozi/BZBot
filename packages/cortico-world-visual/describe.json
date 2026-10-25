@@ -1,0 +1,49 @@
+{
+  "tools": [
+    {
+      "name": "visual_save",
+      "tags": [
+        "write"
+      ],
+      "description": "Save a picture someone sent you into your visual library, so you can use it as a reference when drawing. Only pictures from whitelisted senders can be saved. Pictures of the same person or thing go under the same id; use \"self\" for yourself.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "type": "string",
+            "description": "The exact log: blob handle of the picture in the conversation."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "Short entry id, e.g. \"self\" or \"团子\". An existing id adds the picture to that entry."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Display name; omit to keep the current one."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "description": "Other names people use for it; omit to keep the current ones."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 8000,
+            "description": "Appearance notes for the image model; omit to keep the current text."
+          }
+        },
+        "required": [
+          "image",
+          "id"
+        ]
+      }
+    }
+  ],
+  "events": []
+}

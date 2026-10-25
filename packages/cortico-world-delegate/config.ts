@@ -10,8 +10,9 @@ export interface DelegateConfigSection {
 export const DELEGATE_DEFAULTS: DelegateConfigSection = {
   writableDirs:'', allowNetwork:false, allowWebSearch:false, enabled:false, active:true, allowedQQ:'', executableFile:'', workspaceDir:'', model:'', timeoutSeconds:1200, maxQueued:3,
 };
-export function allowedUsers(cfg: DelegateConfigSection): Set<string> {
-  return new Set(cfg.allowedQQ.split(/[\s,，;；]+/).filter(id=>/^[1-9]\d{4,15}$/.test(id)));
+/** 能委派的 QQ：设置页「人格 → 全局变量」的白名单 QQ，加上本插件自己的白名单。 */
+export function allowedUsers(cfg: DelegateConfigSection, trusted: readonly string[] = []): Set<string> {
+  return new Set([...trusted, ...cfg.allowedQQ.split(/[\s,，;；]+/)].filter(id=>/^[1-9]\d{4,15}$/.test(id)));
 }
 export function delegateConfigGroup(language:Language):ConfigGroup {
   const t=strings(language), permissions=permissionStrings[language];

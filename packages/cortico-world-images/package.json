@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-images",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "./index.ts",
@@ -13,8 +13,6 @@
     "kind": "world",
     "api": 6,
     "displayName": "Codex 生图",
-    "describe": "describe.json",
-    "webUiClient": "dist/webui.js",
-    "webUiStyle": "dist/webui.css"
+    "describe": "describe.json"
   }
 }

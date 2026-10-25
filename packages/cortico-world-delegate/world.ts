@@ -32,10 +32,12 @@ export class DelegateWorld implements World {
   private stopping=false;
   constructor(private readonly ctx:WorldContext<DelegateConfigSection>,private readonly runner=new CodexRunner()){}
   envPromptVars(){return {};}
+  /** 全局白名单 QQ 加上本插件的白名单；每次现读，设置页改完立即生效。 */
+  private allowed(){return allowedUsers(this.ctx.cfg,this.ctx.globals?.().trustedQQ);}
   async start(host:WorldHost){
     this.host=host;this.stopping=false;
     this.jobs=new Jobs(join(this.ctx.dataDir,'delegate','jobs.sqlite'));this.jobs.recover();
-    this.release=registerDeliveryHint(this.ctx.botDir,this.id,events=>{this.grant=requestGrant(events,allowedUsers(this.ctx.cfg));return null;});
+    this.release=registerDeliveryHint(this.ctx.botDir,this.id,events=>{this.grant=requestGrant(events,this.allowed());return null;});
     this.timer=setInterval(()=>this.kick(),1000);this.timer.unref();this.kick();
   }
   async stop(){
@@ -49,7 +51,7 @@ export class DelegateWorld implements World {
   private authorize(context:ToolCallContext):RequestGrant {
     context.signal?.throwIfAborted();
     if(!this.host||!this.jobs||this.stopping)throw new Error('Delegation is not running');
-    if(context.role!=='main'||!this.grant||!allowedUsers(this.ctx.cfg).has(this.grant.user)||Date.now()-this.grant.at>5*60000)
+    if(context.role!=='main'||!this.grant||!this.allowed().has(this.grant.user)||Date.now()-this.grant.at>5*60000)
       throw new Error('Only the current allowlisted QQ private user request may use delegation');
     return this.grant;
   }
@@ -83,7 +85,7 @@ export class DelegateWorld implements World {
   private async execute(job:Job){
     const abort=new AbortController();this.running={id:job.id,abort,reason:'cancelled'};
     try{
-      if(!allowedUsers(this.ctx.cfg).has(job.user)){this.jobs!.finish(job.id,'cancelled','Requester was removed from the allowlist before execution.');return;}
+      if(!this.allowed().has(job.user)){this.jobs!.finish(job.id,'cancelled','Requester was removed from the allowlist before execution.');return;}
       const root=this.ctx.cfg.workspaceDir||join(this.ctx.dataDir,'delegate','tasks');
       const workspace=taskWorkspace(root,job.id);this.jobs!.running(job.id,workspace);
       const result=await this.runner.run({executable:this.ctx.cfg.executableFile,workspace,task:job.task,model:this.ctx.cfg.model,

@@ -25,6 +25,7 @@
 - `memo/` 顶层（常驻）→ 第 2 层；`memo/active/` → 第 1 层；`memo/archived/` → 第 3 层（会被索引）。
 - `WORLDVIEW.md`、`people/`、`CONSTITUTION.md` 沿用 soulmate 的读写权限规则。
 - **新增**：`PARTNER.md`（参考 Coopanion 的做法：整篇放进前缀，不能用 `delete_file` 删除）、`kb/` 目录、`kb.sqlite`、`recall` 系列工具、第 2 层的整体 token 预算。
+- **图像资料** `visual/<id>/`（`entry.md` 加图片，`self` 是她自己）：自设图和别人东西的参考图，由图像资料扩展 `cortico-world-visual` 管理；画图时她自己挑图，把 `mem:visual/<id>/<文件名>` 交给生图扩展；她用 `visual_save` 存白名单里的人发来的图（发送者和聊天从事件库确认）。现在条目列表经环境提示词进前缀，她按 id 选；条目多了再加向量检索（只索引 `entry.md` 的文字，存在记忆目录外，可重建），知识库做好后作为 `kind: visual` 片段并入 `kb.sqlite`，`recall` 返回图片引用。`source: private` 的条目在群里不返回，这条要等检索能按聊天过滤时才有硬兜底。
 
 ## 3. 第 2 层：长期记忆
 

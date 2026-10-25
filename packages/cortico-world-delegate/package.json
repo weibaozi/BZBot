@@ -1,5 +1,5 @@
 {
-  "name": "cortico-world-delegate", "version": "0.1.1", "private": true, "type": "module", "main": "./index.ts",
+  "name": "cortico-world-delegate", "version": "0.1.2", "private": true, "type": "module", "main": "./index.ts",
   "description": "Asynchronous local Codex tasks for allowlisted private users", "keywords": ["cortico-world"],
   "cortico": { "kind": "world", "api": 6, "displayName": "Codex 委派", "webUiClient": "dist/webui.js", "describe": "describe.json" },
   "scripts": {
