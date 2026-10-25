@@ -1,0 +1,108 @@
+diff --git a/docs/world-leading-segments.md b/docs/world-leading-segments.md
+new file mode 100644
+index 0000000..f1f3944
+--- /dev/null
++++ b/docs/world-leading-segments.md
+@@ -0,0 +1,17 @@
++<!-- Owner: src/core/types.ts (World.leadingSystemSegments), src/core/prefix.ts -->
++
++# World leading system segments
++
++An operator-managed extension may implement `leadingSystemSegments()` to supply static
++`PrefixSegment` values before the Persona's system segments. Worlds are ordered by id;
++each World's segment order and text are preserved. The hook is optional. Without it,
++prefix assembly is unchanged. A failure propagates instead of omitting the rules.
++
++This hook is evaluated only during prefix assembly, including preview and reload. It
++must not produce timestamps, retrieval results, or other changing context. Edits take
++effect on the next prefix rebuild. A fork inheriting the main context also inherits the
++rules in that snapshot. Unmounted or hidden Worlds do not contribute to runtime assembly.
++
++The host exports `WORLD_LEADING_SYSTEM_SEGMENTS` from `core/prefix.ts` so extensions
++requiring this hook can reject incompatible hosts. Rule management and storage belong to
++the extension; Core does not interpret the text or enforce its semantic instructions.
+diff --git a/src/core/prefix.ts b/src/core/prefix.ts
+index 561df2e..f3223cd 100644
+--- a/src/core/prefix.ts
++++ b/src/core/prefix.ts
+@@ -1,7 +1,8 @@
+ /**
+  * Assembles the main-session system prefix from Persona.systemSegments().
+  * World environment text is rendered from templates and supplied to that hook.
+- * Core joins the returned segments in order; their text remains opaque to Core.
++ * Operator-managed World leading segments precede the Persona segments.
++ * Core joins segments in order; their text remains opaque to Core.
+  */
+ import { existsSync, readFileSync } from 'node:fs';
+ import { join } from 'node:path';
+@@ -14,6 +15,9 @@ import type {
+   PromptDocDecl,
+ } from './types.ts';
+ 
++/** Extensions can reject hosts that cannot place their static segments first. */
++export const WORLD_LEADING_SYSTEM_SEGMENTS = true;
++
+ export interface AssembleSystemDeps {
+   persona: Persona;
+   worlds: World[];
+@@ -107,11 +111,14 @@ export async function collectWorldContexts(
+ /** 供 WebUI 观察:前缀的分段视图(与实际发出的前缀同一来源) */
+ export async function assembleSystemSegments(deps: AssembleSystemDeps): Promise<PrefixSegment[]> {
+   const { persona, worlds, now, timezone, dirs } = deps;
+-  return persona.systemSegments({
++  const leading = await Promise.all([...worlds].sort((a, b) => a.id.localeCompare(b.id))
++    .map((world) => world.leadingSystemSegments?.() ?? []));
++  const segments = await persona.systemSegments({
+     now,
+     timezone,
+     worlds: await collectWorldContexts(worlds, dirs),
+   });
++  return [...leading.flat(), ...segments];
+ }
+ 
+ /** 按顺序直接拼接各段，分隔符由 Persona 的段文本提供。 */
+diff --git a/src/core/types.ts b/src/core/types.ts
+index 32fe1a3..293ab21 100644
+--- a/src/core/types.ts
++++ b/src/core/types.ts
+@@ -902,6 +902,11 @@ export interface RunPhase {
+ /** World 的环境描述、事件和工具契约。 */
+ export interface World {
+   id: string;
++  /** Operator-managed static segments placed before the Persona, sorted by World id.
++   * Read only when rebuilding the prefix; never use this for dynamic event data.
++   * A failure aborts assembly rather than silently omitting these segments.
++   */
++  leadingSystemSegments?(): PrefixSegment[] | Promise<PrefixSegment[]>;
+   /**
+    * 环境模板的当前变量值；文本来自 role=envPrompt 的 promptDocs 模板。
+    * 返回 null 时省略该 World 的环境段；返回空对象时保留无变量的模板全文。
+diff --git a/tests/core/leading-prefix.test.ts b/tests/core/leading-prefix.test.ts
+new file mode 100644
+index 0000000..10c087a
+--- /dev/null
++++ b/tests/core/leading-prefix.test.ts
+@@ -0,0 +1,23 @@
++import { expect, it } from 'vitest';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { CortiSoulmate } from '../../bots/corti-soulmate/persona/index.ts';
++import { makeCfg } from './helpers.ts';
++import { assembleSystem } from '../../src/core/prefix.ts';
++import type { World } from '../../src/core/types.ts';
++
++it('orders leading segments by World id, preserves each World order and propagates failures', async () => {
++  const dir = mkdtempSync(join(tmpdir(), 'leading-prefix-'));
++  try {
++    const persona = new CortiSoulmate({ cfg: makeCfg(), memoryDir: dir });
++    const world = (id: string, text: string): World => ({ id, envPromptVars: () => null, tools: () => [],
++      start: async () => {}, stop: async () => {}, leadingSystemSegments: () => [{ title: id, text }] });
++    const deps = { persona, now: new Date(), timezone: 'UTC' };
++    const base = await assembleSystem({ ...deps, worlds: [] });
++    expect(await assembleSystem({ ...deps, worlds: [world('z', 'Z'), world('a', 'A')] })).toBe('AZ' + base);
++    const broken = world('broken', '');
++    broken.leadingSystemSegments = () => { throw new Error('unreadable rules'); };
++    await expect(assembleSystem({ ...deps, worlds: [broken] })).rejects.toThrow('unreadable rules');
++  } finally { rmSync(dir, { recursive: true, force: true }); }
++});
