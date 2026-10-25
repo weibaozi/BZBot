@@ -8,9 +8,10 @@ import { PolicyStore } from './server/layers.ts';
 
 export class PolicyWorld implements World {
   readonly id = 'policy';
+  readonly leadingSystemSegmentsAfter = 'orientation';
   readonly store: PolicyStore;
   constructor(ctx: WorldContext<PolicyConfigSection>) {
-    if (!('WORLD_LEADING_SYSTEM_SEGMENTS' in prefix)) throw new Error('Install patch 0017: World leading system segments are required');
+    if (prefix.WORLD_LEADING_SYSTEM_SEGMENTS !== 2) throw new Error('Update patch 0017: anchored system segments are required');
     // Deployment settings, outside the Persona memory workspace and memory cleanup.
     this.store = new PolicyStore(join(ctx.botDir, 'policy', 'layers.json'));
   }

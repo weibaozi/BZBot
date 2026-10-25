@@ -73,7 +73,7 @@ describe('operator rules', () => {
       expect(readFileSync(f.store.file, 'utf8')).toBe('{broken');
     } finally { f.cleanup(); }
   });
-  it('prepends rules to the real Persona and only changes newly assembled prefixes', async () => {
+  it('places rules between orientation and constitution and only changes newly assembled prefixes', async () => {
     const f = fixture();
     try {
       const persona = new CortiSoulmate({ cfg: makeCfg(), memoryDir: join(f.dir, 'memory') });
@@ -81,10 +81,16 @@ describe('operator rules', () => {
       const base = await assembleSystem({ ...deps, worlds: [] });
       let state = f.store.save(f.store.read().revision, [layer('one', 'FIRST'), layer('two', 'SECOND')]);
       const frozen = await assembleSystem(deps);
-      expect(frozen).toBe('FIRST\n\nSECOND\n\n' + base);
+      expect(frozen.indexOf('ORIENTATION')).toBeLessThan(frozen.indexOf('FIRST'));
+      expect(frozen.indexOf('FIRST')).toBeLessThan(frozen.indexOf('SECOND'));
+      expect(frozen.indexOf('SECOND')).toBeLessThan(frozen.indexOf('━━━ 宪法'));
+      expect(frozen.replace('FIRST\n\nSECOND\n\n', '')).toBe(base);
       state = f.store.save(state.revision, [layer('changed', 'REVISED')]);
-      expect(frozen).toBe('FIRST\n\nSECOND\n\n' + base);
-      expect(await assembleSystem(deps)).toBe('REVISED\n\n' + base);
+      expect(frozen).toContain('FIRST\n\nSECOND\n\n');
+      const rebuilt = await assembleSystem(deps);
+      expect(rebuilt.indexOf('ORIENTATION')).toBeLessThan(rebuilt.indexOf('REVISED'));
+      expect(rebuilt.indexOf('REVISED')).toBeLessThan(rebuilt.indexOf('━━━ 宪法'));
+      expect(rebuilt.replace('REVISED\n\n', '')).toBe(base);
       expect(await assembleSystem({ ...deps, worlds: [] })).toBe(base);
       expect(f.world.tools()).toEqual([]);
       expect(f.world.leadingSystemSegments().every(segment => !segment.sourceKey)).toBe(true);

@@ -7,14 +7,14 @@ export default { panels: { layers: { async mount(ctx) {
   const words = zh ? {
     add: '新增一层', save: '保存规则', reload: '重新读取', title: '层名称', enabled: '启用',
     up: '上移', down: '下移', remove: '删除', preview: '合并预览（按上到下顺序）',
-    help: '启用且非空的层按顺序放在系统前缀最前面。聊天和梦境没有编辑工具。保存后，下次交接或手动重载前缀时生效；手动重载会损失一次缓存。',
+    help: '启用且非空的层按顺序放在 ORIENTATION 之后、宪法之前。聊天和梦境没有编辑工具。保存后，下次交接或手动重载前缀时生效；手动重载会损失一次缓存。',
     saved: '已保存。等待下次交接或到系统提示词页重载前缀后生效。', dirty: '有未保存的规则。',
     confirm: '保存这些底层规则？', empty: '暂无规则，点击“新增一层”开始。',
     reloadConfirm: '放弃未保存的修改并重新读取？', deleteConfirm: '删除这一层？', newTitle: '新规则层',
   } : {
     add: 'Add layer', save: 'Save rules', reload: 'Reload', title: 'Layer title', enabled: 'Enabled',
     up: 'Move up', down: 'Move down', remove: 'Delete', preview: 'Merged preview (top to bottom)',
-    help: 'Enabled, nonempty layers precede the Persona system prefix. Chat and dream have no editing tools. Saved rules apply at the next handoff or manual prefix reload; reloading loses one cache hit.',
+    help: 'Enabled, nonempty layers follow ORIENTATION and precede the constitution. Chat and dream have no editing tools. Saved rules apply at the next handoff or manual prefix reload; reloading loses one cache hit.',
     saved: 'Saved. Apply at the next handoff or reload the prefix on the system prompts page.', dirty: 'Rules have unsaved changes.',
     confirm: 'Save these base rules?', empty: 'No rules. Add a layer to begin.',
     reloadConfirm: 'Discard edits and reload?', deleteConfirm: 'Delete this layer?', newTitle: 'New rule layer',
@@ -30,10 +30,18 @@ export default { panels: { layers: { async mount(ctx) {
   previewTitle.textContent = words.preview;
   status.setAttribute('role', 'status');
   const manager = document.createElement('div'); manager.className = 'policy-manager';
-  manager.append(help, toolbar, status, list, previewTitle, preview); ctx.root.append(manager);
+  const columns = document.createElement('div'); columns.className = 'policy-columns';
+  const editor = document.createElement('section'); editor.className = 'policy-editor';
+  const previewPane = document.createElement('section'); previewPane.className = 'policy-preview-pane';
+  editor.setAttribute('aria-label', zh ? '规则编辑' : 'Rule editor');
+  previewPane.setAttribute('aria-label', zh ? '实时预览' : 'Live preview');
+  editor.append(toolbar, status, list); previewPane.append(previewTitle, preview);
+  columns.append(editor, previewPane); manager.append(help, columns); ctx.root.append(manager);
   ctx.guardLeave(() => dirty ? words.dirty : null);
   function updatePreview() {
     preview.textContent = state.layers.filter(layer => layer.enabled && layer.text.trim()).map(layer => layer.text + '\n\n').join('');
+    preview.dataset.empty = preview.textContent ? 'false' : 'true';
+    if (!preview.textContent) preview.textContent = zh ? '启用的规则将在这里实时显示。' : 'Enabled rules will appear here as you edit.';
   }
   function changed() { dirty = true; status.textContent = words.dirty; updatePreview(); }
   function button(label: string, action: () => void | Promise<void>, variant: 'plain' | 'primary' | 'danger' = 'plain') {
