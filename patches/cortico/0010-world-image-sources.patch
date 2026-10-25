@@ -122,7 +122,7 @@ index d6868a9..79cf9e9 100644
          segment: () => cfg.segment,
          imageCapture: cfg.vision,
 diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
-index 24fbc2a..9699ccf 100644
+index 24fbc2a..42c4d81 100644
 --- a/src/worlds/qq/world.ts
 +++ b/src/worlds/qq/world.ts
 @@ -1,3 +1,4 @@
@@ -180,18 +180,22 @@ index 24fbc2a..9699ccf 100644
      for (const [index, message] of messages.entries()) {
        try {
          if (index > 0 && index < parts.length && rule) await this.sleep(segmentDelayMs(message.text, rule));
-@@ -1573,7 +1578,9 @@ export class QQWorld implements World {
+@@ -1572,8 +1577,13 @@ export class QQWorld implements World {
+     const imgMark = opts.imageRef ? `[图片: ${opts.imageRef}]` : '';
      const voiceMark = opts.voiceRef ? `[语音: ${opts.voiceRef}]` : '';
      const selfBody = [opts.text, imgMark, voiceMark].filter(Boolean).join(' ');
++    // 已有的 log:/mem: 句柄照原样挂上,自己存的图在记录里仍指向记忆里那份;只有图片来源给的、
++    // 还不是附件的引用才把实际字节归档成新附件。
++    const archive = !!opts.imageRef && !!opts.imageBytes && !!opts.imageMime && host.blob(opts.imageRef) === null;
      const selfBlob = opts.imageRef
 -      ? { handle: opts.imageRef, fallbackText: '你发出的图片' }
-+      ? (opts.imageMime && opts.imageBytes
-+        ? { bytes: opts.imageBytes, mime: opts.imageMime, fallbackText: '你发出的图片' }
++      ? (archive
++        ? { bytes: opts.imageBytes!, mime: opts.imageMime!, fallbackText: '你发出的图片' }
 +        : { handle: opts.imageRef, fallbackText: '你发出的图片' })
        : opts.voiceRef
          ? { handle: opts.voiceRef, fallbackText: '你发出的语音' }
          : null;
-@@ -1663,9 +1670,13 @@ export class QQWorld implements World {
+@@ -1663,9 +1673,13 @@ export class QQWorld implements World {
  
          // 图片:按句柄确认取得到,并按字节内容弹出已有的识别描述作为preview(省一次qq_view_image)
          let imageRef: string | undefined;
@@ -206,7 +210,7 @@ index 24fbc2a..9699ccf 100644
            if (!got) return `[send failed] no blob for ${imageArg}; use a log: handle from a [blob ...] line or a mem: handle from your workspace`;
            if (!got.mime.startsWith('image/')) return `[send failed] ${imageArg} is ${got.mime}, not an image`;
            imageRef = imageArg;
-@@ -1688,7 +1699,7 @@ export class QQWorld implements World {
+@@ -1688,7 +1702,7 @@ export class QQWorld implements World {
          if (direct) {
            try {
              const outgoing = { text, replyMessageId: rep.mid, imageRef, voiceRef,
@@ -215,7 +219,7 @@ index 24fbc2a..9699ccf 100644
                voiceBytes: voiceRef ? host.blob(voiceRef)!.bytes : undefined };
              const { parts, rule } = this.segmentsFor(target, text);
              if ((rule && parts.length > 1) || (text.trim() && outgoing.imageBytes))
-@@ -1746,10 +1757,11 @@ export class QQWorld implements World {
+@@ -1746,10 +1760,11 @@ export class QQWorld implements World {
            try {
              // 发送时才把字节取回来(草稿只记引用;取消的草稿一次都不读)
              let imageBytes: Uint8Array | undefined;
@@ -229,7 +233,7 @@ index 24fbc2a..9699ccf 100644
              }
              let voiceBytes: Uint8Array | undefined;
              if (draft.voiceRef) {
-@@ -1757,7 +1769,7 @@ export class QQWorld implements World {
+@@ -1757,7 +1772,7 @@ export class QQWorld implements World {
                if (!got) return `[send failed] blob ${draft.voiceRef} is gone (draft kept)`;
                voiceBytes = got.bytes;
              }
