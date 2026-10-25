@@ -1,0 +1,18 @@
+{
+  "name": "cortico-world-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "description": "MCP tool bridge: a browser and other MCP servers as World tools, decided by the persona",
+  "keywords": ["cortico-world"],
+  "cortico": { "kind": "world", "api": 6, "displayName": "MCP 工具", "describe": "describe.json" },
+  "scripts": {
+    "test": "node ../../vendor/cortico/node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@playwright/mcp": "0.0.83"
+  }
+}
