@@ -49,7 +49,7 @@ Cortico 只有三类扩展，每样东西放进哪一类按下表：
 | QQ | World（Cortico 自带） | 配置 `worlds.qq` |
 | QQ 私聊主动聊天调度 | World（`cortico-world-proactive`） | 只向主 session 追加内部提醒，计时、计数和免打扰独立管理；是否开口由现有 Persona 判断，发送仍走 QQ |
 | MCP 工具 | World（`cortico-world-mcp`） | 只放几秒内能返回的工具 |
-| Codex / Claude Code 委派 | World（`cortico-world-delegate`） | 异步：工具立刻返回，完成后用 `pushEvent` 推事件唤醒 |
+| 本地 Codex 委派 | World（`cortico-world-delegate`） | 白名单私聊提交，工具立即返回编号；独立目录后台执行，完成后用 `pushEvent` 将结果交回原上下文。当前支持 Codex CLI |
 | 以后：桌宠、游戏、语音输入 | World | 桌宠要拆成服务器端逻辑 + PC 端窗口 |
 | 模型服务 | provider | 现成的够用就不写 |
 

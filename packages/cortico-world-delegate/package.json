@@ -1,0 +1,11 @@
+{
+  "name": "cortico-world-delegate", "version": "0.1.0", "private": true, "type": "module", "main": "./index.ts",
+  "description": "Asynchronous local Codex tasks for allowlisted private users", "keywords": ["cortico-world"],
+  "cortico": { "kind": "world", "api": 6, "displayName": "Codex 委派", "webUiClient": "dist/webui.js", "describe": "describe.json" },
+  "scripts": {
+    "test": "node ../../vendor/cortico/node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "typecheck:web": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.web.json",
+    "build:web": "node scripts/build-webui.mjs"
+  }
+}
