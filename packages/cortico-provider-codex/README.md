@@ -15,7 +15,7 @@ PKCE、state、nonce、JWT 签名和 audience 均校验；授权 10 分钟过期
 生图结果必须有 completed 回执和可解码图片；部分预览、拒绝、空结果不会伪装成功，不会自动改走收费 API。
 
 Codex 后端属于兼容集成，接口与权限可能变化。官方 ChatGPT 套餐 API 当前不支持图片生成，不能用其令牌替代此授权。
-本版支持文生图和普通对话/图片理解，不提供音频或参考图编辑。
+支持文生图、图生图和普通对话/图片理解。参考图使用 input_image 数据 URL；带参考图时使用 edit 动作。一次最多 8 张、合计 20 MB，支持 PNG/JPEG/WebP。不提供音频。
 
 验证：包内运行 `node ../../vendor/cortico/node_modules/vitest/vitest.mjs run`，以及两个 tsconfig 的 `tsc --noEmit`。
 测试使用隔离目录、真实本地 OAuth 服务和签名令牌，不接真实账号。

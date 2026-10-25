@@ -176,3 +176,5 @@ interface ModelHub {
 1. **ChatGPT 供应商**是我们自己的扩展（`cortico-provider-chatgpt`），也要按新格式声明「只支持对话」，并改成一个供应商下挂多个模型。
 2. **做梦用不同模型**：Cortico 目前所有 session 共用 `activeProvider`。让做梦单独选一个更便宜的模型需要改 Core 选端点的逻辑，不在这次范围内，以后单独评估。
 3. **上游**：这套改动比较大，上游未必接受。先作为我们自己的补丁维护，跑稳了再决定要不要提 PR。
+
+生图选项支持 `images: Array<{ bytes: Uint8Array; mime: string }>`，由供应商实现参考图编辑。Codex 使用图片输入；普通文生图端点收到参考图时明确拒绝。Codex 生图扩展的「参考资料」维护自设图、别名与说明，通过 `images_references` 按需检索。

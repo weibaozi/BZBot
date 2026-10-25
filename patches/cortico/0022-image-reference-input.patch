@@ -1,0 +1,48 @@
+diff --git a/src/providers/image-generation.ts b/src/providers/image-generation.ts
+index b06bd41..0eab2ce 100644
+--- a/src/providers/image-generation.ts
++++ b/src/providers/image-generation.ts
+@@ -1,6 +1,9 @@
+ import type { LLMUsage } from '../core/types.ts';
+ 
+-export interface ImageGenerationOptions { signal?: AbortSignal; size?: string; timeoutSeconds?: number }
++export interface ImageGenerationOptions {
++  signal?: AbortSignal; size?: string; timeoutSeconds?: number;
++  images?: Array<{ bytes: Uint8Array; mime: string }>;
++}
+ export interface ImageGenerationRequest extends ImageGenerationOptions { model: string; prompt: string; controllerModel?: string }
+ export interface ImageGenerationResult { images: Array<{ bytes: Uint8Array; mime: string }>; usage?: LLMUsage }
+ 
+diff --git a/src/providers/models.ts b/src/providers/models.ts
+index d9c4fc1..124c718 100644
+--- a/src/providers/models.ts
++++ b/src/providers/models.ts
+@@ -31,6 +31,7 @@ export class ProviderModels implements ModelHub {
+     const signal = AbortSignal.any([AbortSignal.timeout(seconds * 1000), ...(options.signal ? [options.signal] : [])]);
+     const instance = this.registry().preview(ref, model.entry, true);
+     if (instance.generateImage) return instance.generateImage({ ...options, model: this.modelName(model), prompt, signal, controllerModel });
++    if (options.images?.length) throw new Error('This provider does not support reference images; select a Codex image model');
+     if (controllerModel) throw new Error('This provider does not support image controllers');
+     const res = await this.fetchImpl(model.entry.baseUrl.replace(/\/+$/, '') + '/images/generations', {
+       method: 'POST', redirect: 'error', headers: this.headers(model, true), signal,
+diff --git a/tests/providers/image-generation.test.ts b/tests/providers/image-generation.test.ts
+index d2cd5fb..cb45351 100644
+--- a/tests/providers/image-generation.test.ts
++++ b/tests/providers/image-generation.test.ts
+@@ -33,6 +33,8 @@ it('persists the selected text reference, resolves its model, and rejects missin
+     expect(hub.sources('en').sources[0].models[0].imageController).toBe('local/text');
+     const models = new ProviderModels(root, () => registry, [module]); await models.generateImage('local/draw', 'circle');
+     expect(request).toMatchObject({ model: 'draw', controllerModel: 'text', prompt: 'circle' });
++    await models.generateImage('local/draw', 'edit', { images: [decodeGeneratedImage(png)] });
++    expect(request?.images).toEqual([decodeGeneratedImage(png)]);
+     hub.updateModel('local', 'text', { expectedRevision: revision(), enabled: false }, 'en');
+     await expect(models.generateImage('local/draw', 'circle')).rejects.toThrow('停用');
+     hub.updateModel('local', 'draw', { expectedRevision: revision(), imageController: '' }, 'en');
+@@ -57,6 +59,7 @@ it('image models stay separate from chat and return authenticated image bytes',
+     expect(modelOptions(hub, 'models:image')).toEqual([{ value: 'local/draw', label: 'local/draw' }]);
+     expect(hub.list('chat')).toEqual([]);
+     const result = await hub.generateImage('local/draw', 'a circle');
++    await expect(hub.generateImage('local/draw', 'edit', { images: [decodeGeneratedImage(png)] })).rejects.toThrow('reference images');
+     expect(result.images[0]).toEqual({ bytes: Buffer.from(png, 'base64'), mime: 'image/png' });
+     expect(body).toEqual({ model: 'draw', prompt: 'a circle', n: 1 }); expect(auth).toBe('Bearer fixture-key');
+     await expect(hub.generateImage('local/disabled', 'a circle')).rejects.toThrow('停用');

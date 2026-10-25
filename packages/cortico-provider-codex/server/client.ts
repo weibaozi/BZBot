@@ -39,12 +39,19 @@ export class CodexClient extends BaseProvider {
       media: { enabled: this.images, read: this.host.readBlob }, keepThinking: this.host.keepThinking }).respond(request, { ...options, signal });
   }
   async generateImage(request: ImageGenerationRequest): Promise<ImageGenerationResult> {
+    const references = request.images ?? [];
+    if (references.length > 8 || references.reduce((sum, image) => sum + image.bytes.byteLength, 0) > 20_000_000) throw new Error('Use at most 8 reference images totaling 20 MB');
+    const imageInputs = references.map(image => {
+      const decoded = decodeGeneratedImage(Buffer.from(image.bytes).toString('base64'));
+      if (decoded.mime !== image.mime) throw new Error('Reference image MIME does not match its content');
+      return { type: 'input_image', image_url: `data:${decoded.mime};base64,${Buffer.from(decoded.bytes).toString('base64')}` };
+    });
     const signal = AbortSignal.any([this.auth.signal, AbortSignal.timeout((request.timeoutSeconds ?? 180) * 1000), ...(request.signal ? [request.signal] : [])]);
     const headers = await this.headers(signal);
     const response = await fetch(`${this.endpoint}/responses`, { method: 'POST', redirect: 'error', headers, signal,
       body: JSON.stringify({ model: request.controllerModel ?? this.controllerModel(), instructions: 'Generate the requested image using the image generation tool.',
-        input: [{ role: 'user', content: [{ type: 'input_text', text: request.prompt }] }],
-        tools: [{ type: 'image_generation', action: 'generate', model: request.model, ...(request.size ? { size: request.size } : {}) }],
+        input: [{ role: 'user', content: [{ type: 'input_text', text: request.prompt }, ...imageInputs] }],
+        tools: [{ type: 'image_generation', action: references.length ? 'edit' : 'generate', model: request.model, ...(request.size ? { size: request.size } : {}) }],
         tool_choice: { type: 'image_generation' }, store: false, stream: true }) });
     if (!response.ok) throw new Error(`Codex image generation failed (HTTP ${response.status})`);
     return readImageStream(response);

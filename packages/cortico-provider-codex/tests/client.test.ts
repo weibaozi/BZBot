@@ -33,6 +33,10 @@ it('uses independent OAuth for real HTTP chat and image requests and keeps contr
     const images = await client.generateImage({ model: 'image-model', prompt: 'A blue circle', controllerModel: 'selected-text-model' });
     expect(images.images[0].mime).toBe('image/png'); expect(images.images[0].bytes.length).toBeGreaterThan(40);
     expect(seen[1]).toMatchObject({ model: 'selected-text-model', tools: [{ type: 'image_generation', model: 'image-model', action: 'generate' }], tool_choice: { type: 'image_generation' } });
+    await client.generateImage({ model: 'image-model', prompt: 'Make the circle red', images: [{ bytes: Buffer.from(png, 'base64'), mime: 'image/png' }] });
+    expect(seen[2]).toMatchObject({ tools: [{ action: 'edit' }], input: [{ role: 'user', content: [{ type: 'input_text', text: 'Make the circle red' }, { type: 'input_image', image_url: `data:image/png;base64,${png}` }] }] });
+    await expect(client.generateImage({ model: 'image-model', prompt: 'edit', images: [{ bytes: Buffer.from('not image'), mime: 'image/png' }] })).rejects.toThrow('format');
+    expect(seen).toHaveLength(3);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 

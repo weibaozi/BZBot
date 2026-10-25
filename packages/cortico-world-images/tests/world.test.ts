@@ -24,7 +24,7 @@ it('uses the configured model-hub image model and returns a blob without sending
     await expect(tool.handler({ prompt: 'a circle' }, context)).rejects.toThrow('模型中心');
     cfg.model = 'local/draw';
     const result = await tool.handler({ prompt: 'a circle' }, context);
-    expect(result).toMatchObject({ text: JSON.stringify({ generated: 1, sent: false }), blobs: [{ mime: 'image/png', name: 'generated-1' }] });
+    expect(result).toMatchObject({ text: JSON.stringify({ generated: 1, sent: false, references: [], inputImages: 0 }), blobs: [{ mime: 'image/png', name: 'generated-1' }] });
     await world.stop();
     await expect(tool.handler({ prompt: 'a circle' }, context)).rejects.toThrow();
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); tmp.cleanup(); }
