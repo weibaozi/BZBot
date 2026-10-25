@@ -1,0 +1,167 @@
+diff --git a/dist/webui.js b/dist/webui.js
+index 59275d6243947ddb95cd80942ec442e0d53aa4f2..6aa7ed768db6a55165dda15c4140753d097530ef 100644
+--- a/dist/webui.js
++++ b/dist/webui.js
+@@ -27,7 +27,7 @@ async function mountEntries(ctx) {
+   const msg = ui.msgline();
+   const rowbar = ui.rowbar();
+   const table = ui.table({
+-    head: ["\u72B6\u6001", "\u8282\u5F8B", "\u4E0B\u6B21\u89E6\u53D1", "\u63D0\u793A\u8BCD", "\u8C01\u8981\u7684", "\u64CD\u4F5C"],
++    head: ["\u542F\u7528", "\u8282\u5F8B", "\u4E0B\u6B21\u89E6\u53D1", "\u63D0\u793A\u8BCD", "\u8C01\u8981\u7684", "\u64CD\u4F5C"],
+     maxHeight: "calc(100vh - 430px)"
+   });
+   rowbar.append(
+@@ -223,21 +223,57 @@ async function mountEntries(ctx) {
+       msgline(errText(err), true);
+     }
+   }
++  function nowrap(text, cls) {
++    const cell = ui.h("span", cls ?? null, text);
++    cell.style.whiteSpace = "nowrap";
++    return cell;
++  }
++  function shortNext(next) {
++    const m = /(\d{4})-(\d{2}-\d{2})T(\d{2}:\d{2})/.exec(next);
++    if (!m) return next || "\u2014";
++    return m[1] === String((/* @__PURE__ */ new Date()).getFullYear()) ? `${m[2]} ${m[3]}` : `${m[1]}-${m[2]} ${m[3]}`;
++  }
++  function ensureSwitchStyle() {
++    const doc = ctx.root.ownerDocument;
++    if (doc.getElementById("agenda-switch-style")) return;
++    const style = doc.createElement("style");
++    style.id = "agenda-switch-style";
++    style.textContent = [
++      ".agenda-switch{appearance:none;position:relative;flex:none;width:40px;height:22px;margin:0;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface-hover);cursor:pointer;transition:background .18s,border-color .18s;vertical-align:middle}",
++      ".agenda-switch::before{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--surface);box-shadow:0 1px 3px color-mix(in srgb,var(--ink) 22%,transparent);transition:transform .18s}",
++      ".agenda-switch:checked{background:var(--accent);border-color:var(--accent)}",
++      ".agenda-switch:checked::before{transform:translateX(18px)}",
++      ".agenda-switch:focus-visible{outline:2px solid var(--accent);outline-offset:3px}",
++      "@media(prefers-reduced-motion:reduce){.agenda-switch,.agenda-switch::before{transition:none}}"
++    ].join("\n");
++    doc.head.append(style);
++  }
+   function renderRow(e) {
++    ensureSwitchStyle();
++    const toggleSwitch = ui.h("input", "agenda-switch", null);
++    toggleSwitch.type = "checkbox";
++    toggleSwitch.checked = e.enabled;
++    toggleSwitch.setAttribute("role", "switch");
++    toggleSwitch.setAttribute("aria-label", e.enabled ? "\u5DF2\u542F\u7528,\u70B9\u51FB\u505C\u7528" : "\u5DF2\u505C\u7528,\u70B9\u51FB\u542F\u7528");
++    toggleSwitch.title = e.enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u505C\u7528";
++    toggleSwitch.addEventListener("change", () => void toggle(e).then(() => refresh()));
+     const ops = ui.h("div", null, null);
+     ops.style.display = "flex";
+     ops.style.gap = "6px";
+-    ops.append(
+-      ui.button(e.enabled ? "\u505C\u7528" : "\u542F\u7528", { size: "sm", onClick: () => void toggle(e) }),
++    ops.style.flexWrap = "nowrap";
++    for (const button of [
+       ui.button("\u7F16\u8F91", { size: "sm", onClick: () => fillForm(e) }),
+       ui.button("\u5220\u9664", { size: "sm", variant: "danger", onClick: () => void del(e) })
+-    );
++    ]) {
++      button.style.whiteSpace = "nowrap";
++      ops.append(button);
++    }
+     table.addRow([
+-      ui.pill(e.enabled ? "\u542F\u7528" : "\u505C\u7528", e.enabled ? "on" : "off"),
+-      { text: e.schedule, cls: "mono" },
+-      e.next || "\u2014",
++      toggleSwitch,
++      nowrap(e.schedule.replace(/^节律\s*/, ""), "mono"),
++      nowrap(shortNext(e.next)),
+       { text: e.prompt, cls: "txt" },
+-      e.ownerLabel,
++      nowrap(e.ownerLabel),
+       ops
+     ]);
+   }
+diff --git a/src/webui/client.ts b/src/webui/client.ts
+index 268b6447c4b18abc1ee747bcf51ceaf0b2209def..791ab4d4530523500d78addc04baa71e99b6c951 100644
+--- a/src/webui/client.ts
++++ b/src/webui/client.ts
+@@ -94,7 +94,7 @@ async function mountEntries(ctx: WebUiPanelContext): Promise<void> {
+   const msg = ui.msgline();
+   const rowbar = ui.rowbar();
+   const table: WebUiTable = ui.table({
+-    head: ['状态', '节律', '下次触发', '提示词', '谁要的', '操作'],
++    head: ['启用', '节律', '下次触发', '提示词', '谁要的', '操作'],
+     maxHeight: 'calc(100vh - 430px)',
+   });
+   rowbar.append(
+@@ -305,21 +305,68 @@ async function mountEntries(ctx: WebUiPanelContext): Promise<void> {
+     }
+   }
+ 
++  /** 不换行的单元格:窄列被长提示词挤压时也不逐字折行。 */
++  function nowrap(text: string, cls?: string): HTMLElement {
++    const cell = ui.h('span', cls ?? null, text);
++    cell.style.whiteSpace = 'nowrap';
++    return cell;
++  }
++
++  /** 下次触发的显示:去掉「下次」前缀,同年省掉年份(下次 2026-10-25T11:30 → 10-25 11:30)。 */
++  function shortNext(next: string): string {
++    const m = /(\d{4})-(\d{2}-\d{2})T(\d{2}:\d{2})/.exec(next);
++    if (!m) return next || '—';
++    return m[1] === String(new Date().getFullYear()) ? `${m[2]} ${m[3]}` : `${m[1]}-${m[2]} ${m[3]}`;
++  }
++
++  /**
++   * 开关的样式。控制台的开关样式只在模型供应商页生效,这里按同样的主题变量补一份,
++   * 浅色深色都跟着控制台走;整页只插一次。
++   */
++  function ensureSwitchStyle(): void {
++    const doc = ctx.root.ownerDocument;
++    if (doc.getElementById('agenda-switch-style')) return;
++    const style = doc.createElement('style');
++    style.id = 'agenda-switch-style';
++    style.textContent = [
++      '.agenda-switch{appearance:none;position:relative;flex:none;width:40px;height:22px;margin:0;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface-hover);cursor:pointer;transition:background .18s,border-color .18s;vertical-align:middle}',
++      ".agenda-switch::before{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--surface);box-shadow:0 1px 3px color-mix(in srgb,var(--ink) 22%,transparent);transition:transform .18s}",
++      '.agenda-switch:checked{background:var(--accent);border-color:var(--accent)}',
++      '.agenda-switch:checked::before{transform:translateX(18px)}',
++      '.agenda-switch:focus-visible{outline:2px solid var(--accent);outline-offset:3px}',
++      '@media(prefers-reduced-motion:reduce){.agenda-switch,.agenda-switch::before{transition:none}}',
++    ].join('\n');
++    doc.head.append(style);
++  }
++
+   function renderRow(e: EntryView): void {
++    // 启停是一个开关:状态与操作合在一处,不再一列显示、一列切换。
++    ensureSwitchStyle();
++    const toggleSwitch = ui.h('input', 'agenda-switch', null) as HTMLInputElement;
++    toggleSwitch.type = 'checkbox';
++    toggleSwitch.checked = e.enabled;
++    toggleSwitch.setAttribute('role', 'switch');
++    toggleSwitch.setAttribute('aria-label', e.enabled ? '已启用,点击停用' : '已停用,点击启用');
++    toggleSwitch.title = e.enabled ? '已启用' : '已停用';
++    // 提交被拒时重读一次列表,开关回到真实状态。
++    toggleSwitch.addEventListener('change', () => void toggle(e).then(() => refresh()));
+     const ops = ui.h('div', null, null);
+     ops.style.display = 'flex';
+     ops.style.gap = '6px';
+-    ops.append(
+-      ui.button(e.enabled ? '停用' : '启用', { size: 'sm', onClick: () => void toggle(e) }),
++    ops.style.flexWrap = 'nowrap';
++    for (const button of [
+       ui.button('编辑', { size: 'sm', onClick: () => fillForm(e) }),
+       ui.button('删除', { size: 'sm', variant: 'danger', onClick: () => void del(e) }),
+-    );
++    ]) {
++      button.style.whiteSpace = 'nowrap';
++      ops.append(button);
++    }
+     table.addRow([
+-      ui.pill(e.enabled ? '启用' : '停用', e.enabled ? 'on' : 'off'),
+-      { text: e.schedule, cls: 'mono' },
+-      e.next || '—',
++      toggleSwitch,
++      nowrap(e.schedule.replace(/^节律\s*/, ''), 'mono'),
++      nowrap(shortNext(e.next)),
+       { text: e.prompt, cls: 'txt' },
+-      e.ownerLabel,
++      nowrap(e.ownerLabel),
+       ops,
+     ]);
+   }
