@@ -1,0 +1,95 @@
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index da25dc2..026d201 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -1504,21 +1504,18 @@ export class QQWorld implements World {
+   }
+ 
+   /**
+-   * 按分段规则依次发出:引用只跟第一段,图片跟最后一段,段与段之间停顿。
++   * 按分段规则依次发出:引用只跟第一段,图片在文字后单独发送,仅文字段之间停顿。
+    * 某段发送失败就停下,回执写明已发出的几段;已发出的不再重发。
+    */
+-  private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule): Promise<{ receipt: string; sent: number }> {
++  private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule | null): Promise<{ receipt: string; sent: number }> {
+     const ids: string[] = [];
+     let omittedQuote = false;
+-    for (const [index, part] of parts.entries()) {
+-      const last = index === parts.length - 1;
++    const messages: OutgoingParts[] = parts.map((text, index) => ({ text, ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}) }));
++    if (opts.imageBytes) messages.push({ text: '', imageRef: opts.imageRef, imageBytes: opts.imageBytes });
++    for (const [index, message] of messages.entries()) {
+       try {
+-        if (index > 0) await this.sleep(segmentDelayMs(part, rule));
+-        const sent = await this.deliver(target, {
+-          text: part,
+-          ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}),
+-          ...(last ? { imageRef: opts.imageRef, imageBytes: opts.imageBytes } : {}),
+-        });
++        if (index > 0 && index < parts.length && rule) await this.sleep(segmentDelayMs(message.text, rule));
++        const sent = await this.deliver(target, message);
+         ids.push(sent.messageId !== undefined ? `#${sent.messageId}` : '(no id)');
+         omittedQuote ||= sent.omittedQuote;
+       } catch (e) {
+@@ -1526,7 +1523,7 @@ export class QQWorld implements World {
+         return {
+           sent: ids.length,
+           receipt: ids.length
+-            ? `[send failed on part ${index + 1} of ${parts.length} → ${this.targetDesc(target)}] ${reason}\n`
++            ? `[send failed on part ${index + 1} of ${messages.length} → ${this.targetDesc(target)}] ${reason}\n`
+               + `Parts already sent: ${ids.join(' ')}. The rest was not sent; the draft is cleared so sent parts are not repeated.`
+             : `[send failed] ${reason} (draft kept; confirm again to retry or cancel)`,
+         };
+@@ -1534,7 +1531,7 @@ export class QQWorld implements World {
+     }
+     return {
+       sent: ids.length,
+-      receipt: `[sent as ${parts.length} messages ${ids.join(' ')} → ${this.targetDesc(target)}]`
++      receipt: `[sent as ${messages.length} messages ${ids.join(' ')} → ${this.targetDesc(target)}]`
+         + (omittedQuote ? '\nQuote replies are disabled; sent without quoting.' : ''),
+     };
+   }
+@@ -1692,6 +1689,7 @@ export class QQWorld implements World {
+           : 'Quote replies are disabled; this draft will be sent without quoting.');
+         lines.push(text.trim() ? `Text: ${text}` : voiceRef ? '(voice bar, no text)' : '(image only, no text)');
+         const { parts } = this.segmentsFor(target, text);
++        if (text.trim() && imageRef) lines.push('Text will be sent first, then the image as a separate message, with one confirmation.');
+         if (parts.length > 1) lines.push(`Will be sent as ${parts.length} messages with short pauses: ${parts.map((part) => `「${part}」`).join(' ')}`);
+         if (previewLine) lines.push(previewLine);
+         lines.push(
+@@ -1737,7 +1735,7 @@ export class QQWorld implements World {
+             }
+             const outgoing = { text: draft.text, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, voiceRef: draft.voiceRef, voiceBytes };
+             const { parts, rule } = this.segmentsFor(draft.target, draft.text);
+-            if (rule && parts.length > 1) {
++            if ((rule && parts.length > 1) || (draft.text.trim() && imageBytes)) {
+               // 发出过任何一段就清掉草稿,免得重试时重复发出已发的段;一段都没发出则照常保留
+               const result = await this.sendSegments(draft.target, outgoing, parts, rule);
+               if (result.sent > 0) this.pendingDraft = null;
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+index b3db022..6520b7c 100644
+--- a/tests/integration/qq-segment.test.ts
++++ b/tests/integration/qq-segment.test.ts
+@@ -96,16 +96,16 @@ it('a failure after the first part reports what went out and drops the draft; a
+   } finally { await done(); }
+ }, 15000);
+ 
+-it('an image rides with the last part', async () => {
++it.each(['private', 'group'] as const)('an image follows all text in a separate message for %s', async (kind) => {
+   const { mock, tool, ctx, incoming, self, done, memoryDir } = await fixture();
+   try {
+-    await incoming('private');
++    await incoming(kind);
+     const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
+     writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+-    expect(await tool('qq_draft').handler({ to: 'private:1001', text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx)).toContain('Will be sent as 2 messages');
+-    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toMatch(/^\[sent as 2 messages/);
+-    expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type))).toEqual([['text'], ['image', 'text']]);
+-    expect(self().at(-1)!.text).toContain('猫 [图片: mem:external/qq/images/cat.png]');
++    expect(await tool('qq_draft').handler({ to: kind === 'private' ? 'private:1001' : 'group:424242', text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx)).toContain('Text will be sent first');
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toContain(`sent as ${kind === 'private' ? 3 : 2} messages`);
++    expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type))).toEqual(kind === 'private' ? [['text'], ['text'], ['image']] : [['text'], ['image']]);
++    expect(self().at(-1)!.text).toContain('你: [图片: mem:external/qq/images/cat.png]');
+   } finally { await done(); }
+ }, 15000);
+ 

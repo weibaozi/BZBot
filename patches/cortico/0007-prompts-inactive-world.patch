@@ -247,10 +247,10 @@ index a5af1c9..0fe7b6f 100644
  /** 前缀的一段。`sourceKey` 指向可编辑模板;没有 = 现拼的,编辑器标只读。 */
 diff --git a/tests/prompts-inactive-world.test.ts b/tests/prompts-inactive-world.test.ts
 new file mode 100644
-index 0000000..efd21c5
+index 0000000..c2c219e
 --- /dev/null
 +++ b/tests/prompts-inactive-world.test.ts
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,48 @@
 +/**
 + * 提示词页列出全部 World 的环境模板以便提前编辑;没挂载的 World 的模板标出来,它不进前缀。
 + */
@@ -262,6 +262,7 @@ index 0000000..efd21c5
 +import { loadDeployment } from '../src/deploy.ts';
 +import { FakeLLM } from './core/helpers.ts';
 +import { withWorlds } from '../src/world.ts';
++import type { QQConfigSection } from '../src/worlds/qq/config.ts';
 +import { loadBuiltinWorlds } from '../src/worlds/index.ts';
 +import cormini, { type CorminiConfig } from '../bots/cormini/index.ts';
 +
@@ -275,7 +276,7 @@ index 0000000..efd21c5
 +  const loaded = loadDeployment(definition, dir, resolve(import.meta.dirname, '..'));
 +  loaded.config.web.port = 0;
 +  loaded.config.worlds.console.enabled = true;
-+  loaded.config.worlds.qq.enabled = false;
++  (loaded.config.worlds as CorminiConfig['worlds'] & { qq: QQConfigSection }).qq.enabled = false;
 +  bot = createBot(loaded, { ...definition, build: (l, worlds) => ({ ...definition.build(l, worlds), llm: new FakeLLM() }) });
 +  port = (await bot.start()).port as number;
 +}, 20000);
