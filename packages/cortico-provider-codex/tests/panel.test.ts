@@ -14,7 +14,8 @@ it('exposes browser sign-in instead of the default API key editor', () => {
     const settings = new ProviderSettings(cfg, registry, join(tmp.dir, 'config.json'), tmp.dir, [codex]);
     const hub = new ProviderHub(cfg, registry, settings, join(tmp.dir, 'config.json'), tmp.dir, [codex]);
     const sections = hub.moduleList('zh')[0].sections;
-    expect(sections.map(section => section.id)).toEqual(['account', 'pricing']);
+    expect(sections.map(section => section.id)).toEqual(['account', 'model', 'pricing']);
+    expect(sections.find(section => section.id === 'model')?.builtin).toBe('connection-model');
     expect(sections.some(section => section.builtin === 'connection-endpoint')).toBe(false);
   } finally { tmp.cleanup(); }
 });

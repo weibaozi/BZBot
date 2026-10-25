@@ -29,7 +29,8 @@ export default {
       listModels: async () => catalog.map(id => ({ id })), stop: async () => auth.stop(), compatibilityKey: () => [CODEX_BASE_URL, host.stateDir] };
   },
   webUi(host) {
-    return { panels: [{ id: 'account', title: host.language.startsWith('zh') ? 'Codex 登录' : 'Codex sign-in', defaultOpen: true }, connectionBlocks(host.language).pricing],
+    const blocks = connectionBlocks(host.language);
+    return { panels: [{ id: 'account', title: host.language.startsWith('zh') ? 'Codex 登录' : 'Codex sign-in', defaultOpen: true }, blocks.model, blocks.pricing],
       invoke: async (panel, method, args) => {
         if (panel !== 'account') throw new Error('Unknown panel');
         const name = (args[0] as { name?: string })?.name;
