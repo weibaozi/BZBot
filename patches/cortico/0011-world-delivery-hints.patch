@@ -1,0 +1,99 @@
+diff --git a/bots/corti-soulmate/index.ts b/bots/corti-soulmate/index.ts
+index 5620ccf..881af98 100644
+--- a/bots/corti-soulmate/index.ts
++++ b/bots/corti-soulmate/index.ts
+@@ -1,3 +1,4 @@
++import { withDeliveryHints } from 'cortico/worlds/delivery-hints.ts';
+ import { resolve } from 'node:path';
+ 
+ import type { BotDefinition, BotParts, WebUiContribution } from 'cortico/bot.ts';
+@@ -76,6 +77,7 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
+     firstTurnDir: resolve(loaded.rootDir, 'prompts'),
+     promptsDir: resolve(loaded.rootDir, 'prompts'),
+   });
++  withDeliveryHints(persona, loaded.rootDir);
+ 
+   return {
+     persona,
+diff --git a/src/worlds/delivery-hints.ts b/src/worlds/delivery-hints.ts
+new file mode 100644
+index 0000000..1220e14
+--- /dev/null
++++ b/src/worlds/delivery-hints.ts
+@@ -0,0 +1,31 @@
++/** Trusted extension reminders appended through the Persona delivery hook, never the prefix. */
++import { resolve } from 'node:path';
++import type { CoreApi, EventEnvelope, Persona } from '../core/types.ts';
++type Hint = (events: readonly EventEnvelope[]) => string | null;
++const hints = new Map<string, Map<string, Hint>>();
++function key(dir: string) { const path = resolve(dir); return process.platform === 'win32' ? path.toLowerCase() : path; }
++export function registerDeliveryHint(dir: string, owner: string, hint: Hint): () => void {
++  const scope = key(dir);
++  let entries = hints.get(scope);
++  if (!entries) hints.set(scope, entries = new Map());
++  if (entries.has(owner)) throw new Error(`Delivery hint already registered: ${owner}`);
++  entries.set(owner, hint);
++  return () => {
++    if (entries.get(owner) === hint) entries.delete(owner);
++    if (!entries.size && hints.get(scope) === entries) hints.delete(scope);
++  };
++}
++/** Install at bot assembly; normal Persona hooks and attachment keep their original receiver. */
++export function withDeliveryHints(persona: Persona, dir: string): void {
++  let api: CoreApi | undefined;
++  const attach = persona.attach.bind(persona);
++  const onDelivery = persona.onDelivery?.bind(persona);
++  persona.attach = core => { attach(core); api = core; };
++  persona.onDelivery = async context => {
++    await onDelivery?.(context);
++    for (const [owner, hint] of hints.get(key(dir)) ?? []) {
++      const text = hint(context.events);
++      if (text) api?.injectInternal(text, `${owner}.hint`);
++    }
++  };
++}
+diff --git a/tests/integration/delivery-hints.test.ts b/tests/integration/delivery-hints.test.ts
+new file mode 100644
+index 0000000..1ea1452
+--- /dev/null
++++ b/tests/integration/delivery-hints.test.ts
+@@ -0,0 +1,39 @@
++import { expect, it } from 'vitest';
++import { mkdirSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
++import { registerDeliveryHint } from '../../src/worlds/delivery-hints.ts';
++import { MockOneBot } from '../helpers/mock-onebot.ts';
++import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
++it('isolates reminders, preserves the prefix and unregisters delivery callbacks', async () => {
++  const tmp = makeTmpDir(), mock = new MockOneBot({ port: 0, groupId: 424242 });
++  const port = await mock.start(), cfg = makeCfg(), llm = new FakeLLM();
++  cfg.worlds.qq = { ...cfg.worlds.qq, enabled: true, wsUrl: `ws://127.0.0.1:${port}`, groups: [{ id: 424242, enabled: true }], privates: [] };
++  cfg.worlds.console.enabled = false; cfg.web.port = 0;
++  cfg.tick.dayIntervalMinutes = [999, 999]; cfg.tick.nightIntervalMinutes = null;
++  cfg.batching.quietGapMs = 20; cfg.batching.maxBatchAgeMs = 100;
++  const memoryDir = join(tmp.dir, 'memory'); mkdirSync(memoryDir, { recursive: true });
++  writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
++  const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm });
++  const release = registerDeliveryHint(tmp.dir, 'fixture', events => events.some(e => e.type === 'qq.message') ? 'fixture reminder' : null);
++  const other = registerDeliveryHint(join(tmp.dir, 'other'), 'fixture', () => 'wrong deployment');
++  try {
++    expect(() => registerDeliveryHint(tmp.dir, 'fixture', () => null)).toThrow('already registered');
++    await bot.start(); await bot.qqWorld!.waitReady(5000);
++    const deliver = async (text: string) => {
++      mock.emitGroupMessage({ user_id: 1001, nickname: 'fixture', text });
++      await expect.poll(() => llm.calls.some(c => JSON.stringify(c.messages).includes(text)), { timeout: 5000 }).toBe(true);
++      await sleep(80);
++    };
++    await deliver('first chat');
++    const prefix = JSON.stringify(llm.calls.at(-1)!.messages[0]);
++    expect(prefix).not.toContain('fixture reminder');
++    expect(JSON.stringify(llm.calls.at(-1)!.messages)).toContain('fixture reminder');
++    expect(JSON.stringify(llm.calls)).not.toContain('wrong deployment');
++    const count = () => bot.core.store.range({}).filter(e => e.type === 'fixture.hint').length;
++    expect(count()).toBe(1); release();
++    await deliver('second chat');
++    expect(count()).toBe(1);
++    expect(JSON.stringify(llm.calls.at(-1)!.messages[0])).toBe(prefix);
++  } finally { release(); other(); await bot.stop(); await mock.close(); tmp.cleanup(); }
++}, 15000);

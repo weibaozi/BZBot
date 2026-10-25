@@ -1,3 +1,4 @@
+import { PROACTIVE_HINT } from '../server/proactive.ts';
 import { ConsoleWorld } from 'cortico/worlds/console/world.ts';
 import { resolveSourceImage } from 'cortico/worlds/image-sources.ts';
 import { expect, it } from 'vitest';
@@ -9,7 +10,7 @@ import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, textReply, toolReply } from '
 import { nullLogger } from 'cortico/core/util.ts';
 import { archive, world, PNG, FakeModelHub } from './helpers.ts';
 
-it('selected meme id resolves inside QQ direct send over a local OneBot socket', async () => {
+it.each([0, 100])('selected meme id sends directly with proactive hint probability %i', async probability => {
   const tmp = makeTmpDir();
   const onebot = new MockOneBot({ port: 0, groupId: 424242, selfId: 5000, selfNickname: 'bot', selfCard: 'bot', groupName: 'fixture' });
   const port = await onebot.start();
@@ -25,6 +26,7 @@ it('selected meme id resolves inside QQ direct send over a local OneBot socket',
   let auxiliaryCalls = 0;
   const { instance, cfg: memeCfg } = world(tmp.dir, new FakeModelHub(async () => { auxiliaryCalls++; throw new Error('Unexpected auxiliary request'); }));
   memeCfg.memes.minScore = -1;
+  memeCfg.memes.proactiveSearchPercent = probability;
   try {
     await instance.library.importZip(await archive(tmp.dir), 'python'); await instance.search.build();
     const entry = (await instance.library.entries()).find(e => e.category === 'happy')!;
@@ -44,6 +46,8 @@ it('selected meme id resolves inside QQ direct send over a local OneBot socket',
         expect(history).toContain('之前说过我喜欢庆祝的表情');
         expect(history).toContain('给对方一个抱抱');
         expect(history).toContain('开心庆祝');
+        expect(history.includes(PROACTIVE_HINT)).toBe(probability === 100);
+        expect(JSON.stringify(messages[0])).not.toContain(PROACTIVE_HINT);
         expect(messages[0]).toEqual(llm.calls.at(-2)!.messages[0]);
         // The conversation model may choose a lower-ranked candidate using existing context.
         expect(history).toContain(`meme:${entry.id}`);

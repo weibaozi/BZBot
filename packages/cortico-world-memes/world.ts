@@ -1,3 +1,5 @@
+import { registerDeliveryHint } from 'cortico/worlds/delivery-hints.ts';
+import { proactiveHint } from './server/proactive.ts';
 import { registerImageSource } from 'cortico/worlds/image-sources.ts';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -23,6 +25,7 @@ export class MemesWorld implements World {
   readonly semantic: MemeSemantic;
   private host?: WorldHost;
   private releaseImageSource?: () => void;
+  private releaseHint?: () => void;
   private abort = new AbortController();
   private pending?: Promise<void>;
   private jobAbort?: AbortController;
@@ -37,6 +40,7 @@ export class MemesWorld implements World {
   envPromptVars() { return this.ctx.cfg.memes.enabled ? {} : null; }
   async start(host: WorldHost) {
     this.host = host; this.abort = new AbortController();
+    this.releaseHint = registerDeliveryHint(this.ctx.botDir, this.id, events => proactiveHint(this.ctx.cfg.memes, events, Math.random()));
     this.releaseImageSource = registerImageSource(this.ctx.botDir, 'meme', async id => {
       if (!this.ctx.cfg.memes.enabled || this.ctx.cfg.memes.maxMemes === 0) throw new Error('Meme feature is disabled');
       const pack = (await this.library.packs()).find(p => id.startsWith(p.id + ':'));
@@ -47,7 +51,7 @@ export class MemesWorld implements World {
       return { bytes, mime: entry.mime };
     });
   }
-  async stop() { this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
+  async stop() { this.releaseHint?.(); this.releaseHint = undefined; this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
   tools(): ToolDef[] {
     return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');

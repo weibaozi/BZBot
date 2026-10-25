@@ -26,3 +26,5 @@
 将前序状态按明确路径暂存，再修改目标补丁的内容。新文件先用 `git add -N -- <路径>` 纳入 diff；
 使用 `git diff --binary --output=<补丁绝对路径>` 导出未暂存的增量。
 不要把含全部补丁的 `vendor/cortico` diff 写回 `0001`，否则后序补丁会重复应用。
+
+| `0011-world-delivery-hints.patch` | `e3b214e` + `0001`–`0010` | 新增按部署隔离的扩展提醒注册接口，在 corti-soulmate 的 Persona onDelivery 钩子中追加上下文尾部提醒，随扩展停止注销。Core、session 和前缀构造不变；带真实事件库、本地 OneBot 的隔离、注销和前缀稳定测试。 | 未提交；不一定提上游 |

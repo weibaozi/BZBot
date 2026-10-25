@@ -195,7 +195,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
 
   async function loadSettings() {
     const settings = await ctx.invoke<Settings>('settings'); settingsBody.replaceChildren(); workflow.replaceChildren(); const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
-    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes']], ['语义检索', ['embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['captionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
+    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes', 'proactiveSearchPercent']], ['语义检索', ['embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['captionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
     for (const [title, keys] of groups) {
       const section = h('section', '', 'port-settings-group'); section.append(h('h3', title)); workflow.append(button(title, async () => { section.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 'ghost'));
       for (const key of keys) {

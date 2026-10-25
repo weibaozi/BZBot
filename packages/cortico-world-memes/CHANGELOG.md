@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a hot 0–100% proactive search reminder setting, default 50%. Sample once per delivered chat batch and append reminders through the Persona hook without rebuilding the prefix. Explicit image requests remain independent of probability. Requires patch 0011.
+
 - Search results include deployment-scoped `meme:<id>` image references. QQ and console resolve selected images while sending, eliminating the separate `get_meme` model round.
 - Reject disabled, deleted or unavailable images before sending text; keep image bytes in the outgoing event history. Update the saved prompt to pass candidate `image` directly to the channel tool. Requires Cortico patch 0010.
 

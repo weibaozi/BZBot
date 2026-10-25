@@ -60,3 +60,7 @@
 `pnpm test` 使用临时目录、真实 ZIP、本机 OneBot 服务和真实事件库，只有 ModelHub 的 LLM/embedding 使用脚本响应。视觉标注用量通过真实 World 宿主写入用量日志。`pnpm run typecheck`、`pnpm run typecheck:web` 检查类型。`pnpm run build:web` 在 bot 停止后构建面板。
 
 界面样式、导入格式和图片标注流程参考 MIT 授权的 [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)，版本 `88b8a1b`，许可保留在 `webui/upstream/LICENSE`。本扩展不执行 AstrBot 插件，不包含资源广场、自动收集和云同步。图片许可沿用资源包声明。
+
+### 主动搜索提醒
+
+设置页「配图控制 → 主动搜索提示概率（%）」默认 50，范围 0–100，保存后对下一批聊天消息生效。corti-soulmate 在投递钩子中按批抽取一次，命中时将提醒追加到当前上下文尾部，系统前缀不变。它不自动搜索、不强制发图，也不会因提醒自身再触发抽取；0 只关闭随机提醒，用户明确要图仍由常驻提示词要求搜索发送。当前适配需要补丁 0011；继承 corti-soulmate 的 mybot 同样支持。其他 Persona 需接入同一投递提示接口。
