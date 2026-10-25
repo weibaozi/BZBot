@@ -1,0 +1,336 @@
+diff --git a/src/worlds/qq/ENV_PROMPT.md b/src/worlds/qq/ENV_PROMPT.md
+index c41f5cf..b0dd470 100644
+--- a/src/worlds/qq/ENV_PROMPT.md
++++ b/src/worlds/qq/ENV_PROMPT.md
+@@ -5,3 +5,5 @@
+ {{qq.identity | (与QQ的连接尚未建立,群名和你的账号信息暂时未知。)}}
+ 
+ 发送回复使用 qq_send：一次提交文字和图片，直接发送，不需要 qq_confirm。插件先发文字，再单独发图。qq_draft / qq_confirm 是旧版兼容工具，新回复不要使用。
++
++群聊需要真正 @ 某人时，给 qq_send 传有序 messages 数组，例如 [{"type":"plain","text":"早上好，特别是"},{"type":"mention_user","mention_user_id":"上下文中的实际QQ号"},{"type":"plain","text":"，今天也要开心！"}]。可以在句中多次穿插 mention_user，必须使用上下文里确认的 QQ 号，不猜号码。messages 和 text 二选一，普通文字继续用 text；文字里的 @昵称 不会产生提醒。私聊不用 mention_user。图片仍放在同一次调用的 image 参数里，文字（含 @）按分段设置先发送，图片最后单独发送。
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index f0dafd5..0da22ab 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -82,3 +82,7 @@ JSON 分享卡片的来源名、内容标题和目标链接写入消息正文。
+ 语音以 `base64://` 的 `record` 段发出,转成 QQ 语音格式由协议端负责。
+ 
+ `qq_send` 接收与旧草稿相同的收件人、正文和媒体参数，校验后直接发送，不需要确认，也不创建或消费旧草稿。直接发送部分失败时回执列出成功的消息号，不自动重试；不要重复发送已成功的部分。
++
++## 有序消息链
++
++`qq_send` 和兼容草稿工具接受 `messages`：`plain` 使用 `text`，`mention_user` 使用数字 QQ 号字符串 `mention_user_id`，按数组顺序发送。不能同时传非空 `text`。仅群聊支持提及，不接受全体成员或昵称寻址。旧 `text` 保持纯文字，`image` 仍在所有文字之后单独发送。分段规则保留 @ 的位置；若自定义提取或清理正则破坏提及，退回整条文字发送，避免丢失或重复 @。
+diff --git a/src/worlds/qq/message-chain.ts b/src/worlds/qq/message-chain.ts
+new file mode 100644
+index 0000000..69b829f
+--- /dev/null
++++ b/src/worlds/qq/message-chain.ts
+@@ -0,0 +1,50 @@
++import { splitText, type SegmentRule } from './segment.ts';
++
++export type MentionTokens = Record<string, string>;
++
++/** Internal single-character tokens keep mentions indivisible during text splitting. */
++export function parseMessageChain(messages: unknown, text: unknown): { text: string; mentions?: MentionTokens } {
++  if (messages === undefined || messages === null) return { text: typeof text === 'string' ? text : '' };
++  if (typeof text === 'string' && text.trim()) throw new Error('Use either messages or text, not both');
++  if (!Array.isArray(messages) || !messages.length || messages.length > 256) throw new Error('messages must contain 1–256 components');
++  const plain = messages.map(item => typeof item?.text === 'string' ? item.text : '').join('');
++  const mentions: MentionTokens = {};
++  let encoded = '', next = 0xe000;
++  for (const item of messages) {
++    if (!item || typeof item !== 'object') throw new Error('Each message component must be an object');
++    if (item.type === 'plain' && typeof item.text === 'string') encoded += item.text;
++    else if (item.type === 'mention_user' && typeof item.mention_user_id === 'string' && /^[1-9]\d{4,15}$/.test(item.mention_user_id)) {
++      while (next <= 0xf8ff && plain.includes(String.fromCharCode(next))) next++;
++      if (next > 0xf8ff) throw new Error('No available mention token');
++      const token = String.fromCharCode(next++);
++      mentions[token] = item.mention_user_id;
++      encoded += token;
++    } else throw new Error('Use plain with text, or mention_user with a numeric QQ mention_user_id');
++  }
++  if (!encoded.trim()) throw new Error('messages must not be empty');
++  return { text: encoded, mentions };
++}
++
++export function chainSegments(text: string, mentions: MentionTokens = {}): Array<{ type: string; data: Record<string, string> }> {
++  const result: Array<{ type: string; data: Record<string, string> }> = [];
++  let plain = '';
++  const flush = () => { if (plain) result.push({ type: 'text', data: { text: plain } }); plain = ''; };
++  for (const char of text) {
++    if (Object.hasOwn(mentions, char)) { flush(); result.push({ type: 'at', data: { qq: mentions[char] } }); }
++    else plain += char;
++  }
++  flush();
++  return result;
++}
++
++export function chainText(text: string, mentions?: MentionTokens): string {
++  return chainSegments(text, mentions).map(part => part.type === 'at' ? `@${part.data.qq}` : part.data.text).join('');
++}
++
++export function splitChain(text: string, rule: SegmentRule, mentions?: MentionTokens): string[] {
++  const parts = splitText(text, rule);
++  if (!mentions || !Object.keys(mentions).length) return parts;
++  const tokens = (value: string) => [...value].filter(char => Object.hasOwn(mentions, char)).join('');
++  // Custom extraction/cleanup patterns may erase or duplicate tokens. Send whole instead.
++  return tokens(parts.join('')) === tokens(text) ? parts : [text];
++}
+diff --git a/src/worlds/qq/normalize.ts b/src/worlds/qq/normalize.ts
+index b61eded..4e8febd 100644
+--- a/src/worlds/qq/normalize.ts
++++ b/src/worlds/qq/normalize.ts
+@@ -340,7 +340,10 @@ export function renderIncoming(
+ }
+ 
+ 
++import { chainSegments, type MentionTokens } from './message-chain.ts';
++
+ interface OutgoingArgs {
++  mentions?: MentionTokens;
+   text: string;
+   /** 引用回复的平台 message_id(draft(reply_to) 收到的就是这个号) */
+   reply_to_message_id?: number | string;
+@@ -354,7 +357,7 @@ interface OutgoingArgs {
+  * 出站 → segment数组:reply段(如有)在前,然后image段(如有),最后text段
+  * (text非空才加——支持只发图不带字)。
+  * 语音条独占一条消息:QQ 的 record 段不与别的段同发,给了它就只发它。
+- * 不做 @ 编译：agent 写出的“@某人”作为纯文本原样发出。
++ * Only structured mentions compile to at segments; literal @ text stays text.
+  */
+ export function buildOutgoing(args: OutgoingArgs): Segment[] {
+   if (args.record_base64) {
+@@ -368,7 +371,7 @@ export function buildOutgoing(args: OutgoingArgs): Segment[] {
+     segments.push({ type: 'image', data: { file: `base64://${args.image_base64}` } });
+   }
+   if (args.text) {
+-    segments.push({ type: 'text', data: { text: args.text } });
++    segments.push(...chainSegments(args.text, args.mentions));
+   }
+   return segments;
+ }
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 76e678f..41e8d3b 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -52,7 +52,8 @@ import { VISION_DEFAULTS, type VisionConfig, type VisionService } from './vision
+ import { downloadImageBytes } from './image-download.ts';
+ import { qqConfigGroup, qqSegmentConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
+ import { text } from './strings.ts';
+-import { segmentDelayMs, splitText, type SegmentConfig, type SegmentRule } from './segment.ts';
++import { parseMessageChain, splitChain, chainText, type MentionTokens } from './message-chain.ts';
++import { segmentDelayMs, type SegmentConfig, type SegmentRule } from './segment.ts';
+ 
+ export type { Conv } from './conversation.ts';
+ const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+@@ -137,6 +138,7 @@ interface QQWorldDeps {
+ /** 一条外发消息的内容;字节在发送时才取。 */
+ interface OutgoingParts {
+   text: string;
++  mentions?: MentionTokens;
+   replyMessageId?: number | string;
+   imageRef?: string;
+   imageBytes?: Uint8Array;
+@@ -151,6 +153,7 @@ type IncomingImageDownload = { image: { buffer: Uint8Array; mime: string } | nul
+ 
+ /** 暂存的草稿(单槽,一进一出;不确认到本轮末即作废) */
+ interface PendingDraft {
++  mentions?: MentionTokens;
+   target: Conv;
+   text: string;
+   /** 引用回复的平台message_id(已从游标解析好) */
+@@ -186,7 +189,15 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+         description:
+           'Target conversation: "group:<id>" or "private:<id>" (numeric QQ group/user id, not a name). Optional when reply_to is given (taken from the quoted message).',
+       },
+-      text: { type: 'string', description: 'Message text. Optional if image is given.' },
++      text: { type: 'string', description: 'Plain text, alternative to messages. Literal @names are not mentions.' },
++      messages: {
++        type: 'array', description: 'Ordered text and mention components. Use instead of text for inline mentions; only group chats support mention_user. Keep image in the image argument; it is sent last.',
++        items: { type: 'object', properties: {
++          type: { type: 'string', enum: ['plain', 'mention_user'] },
++          text: { type: 'string', description: 'Text for a plain component.' },
++          mention_user_id: { type: 'string', description: 'Exact numeric QQ user ID from context, not a nickname. For mention_user only.' },
++        }, required: ['type'] },
++      },
+       image: {
+         type: 'string',
+         description:
+@@ -330,9 +341,9 @@ export class QQWorld implements World {
+   private readonly sleep: (ms: number) => Promise<void>;
+ 
+   /** 这份正文按目标会话的规则要分成的几段;没有规则或不分段时是原文一段。语音条不带正文,不会分段。 */
+-  private segmentsFor(target: Conv, body: string): { parts: string[]; rule: SegmentRule | null } {
++  private segmentsFor(target: Conv, body: string, mentions?: MentionTokens): { parts: string[]; rule: SegmentRule | null } {
+     const rule = this.segment?.()[target.kind === 'group' ? 'group' : 'private'] ?? null;
+-    return { parts: rule ? splitText(body, rule) : [body], rule };
++    return { parts: rule ? splitChain(body, rule, mentions) : [body], rule };
+   }
+ 
+   /** 被动识图在视觉服务可用时启用；识图描述写入事件库作为可检索记忆。 */
+@@ -1522,11 +1533,11 @@ export class QQWorld implements World {
+   private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule | null, direct = false): Promise<{ receipt: string; sent: number }> {
+     const ids: string[] = [];
+     let omittedQuote = false;
+-    const messages: OutgoingParts[] = parts.map((text, index) => ({ text, ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}) }));
++    const messages: OutgoingParts[] = parts.map((text, index) => ({ text, mentions: opts.mentions, ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}) }));
+     if (opts.imageBytes) messages.push({ text: '', imageRef: opts.imageRef, imageBytes: opts.imageBytes, imageMime: opts.imageMime });
+     for (const [index, message] of messages.entries()) {
+       try {
+-        if (index > 0 && index < parts.length && rule) await this.sleep(segmentDelayMs(message.text, rule));
++        if (index > 0 && index < parts.length && rule) await this.sleep(segmentDelayMs(chainText(message.text, message.mentions), rule));
+         const sent = await this.deliver(target, message);
+         ids.push(sent.messageId !== undefined ? `#${sent.messageId}` : '(no id)');
+         omittedQuote ||= sent.omittedQuote;
+@@ -1560,6 +1571,7 @@ export class QQWorld implements World {
+     }
+     const message = buildOutgoing({
+       text: opts.text,
++      mentions: opts.mentions,
+       reply_to_message_id: this.quoteReply() ? opts.replyMessageId : undefined,
+       image_base64: imageBase64,
+       ...(opts.voiceBytes ? { record_base64: Buffer.from(opts.voiceBytes).toString('base64') } : {}),
+@@ -1576,7 +1588,7 @@ export class QQWorld implements World {
+     // 行首保留平台消息号,使历史查询结果可引用自身消息。
+     const imgMark = opts.imageRef ? `[图片: ${opts.imageRef}]` : '';
+     const voiceMark = opts.voiceRef ? `[语音: ${opts.voiceRef}]` : '';
+-    const selfBody = [opts.text, imgMark, voiceMark].filter(Boolean).join(' ');
++    const selfBody = [chainText(opts.text, opts.mentions), imgMark, voiceMark].filter(Boolean).join(' ');
+     // 已有的 log:/mem: 句柄照原样挂上,自己存的图在记录里仍指向记忆里那份;只有图片来源给的、
+     // 还不是附件的引用才把实际字节归档成新附件。
+     const archive = !!opts.imageRef && !!opts.imageBytes && !!opts.imageMime && host.blob(opts.imageRef) === null;
+@@ -1639,7 +1651,10 @@ export class QQWorld implements World {
+         const host = this.host;
+         const driver = this.driver;
+         if (!host || !driver) return '[tool failed] QQ module not started';
+-        const rawText = typeof args.text === 'string' ? args.text : '';
++        let chain: ReturnType<typeof parseMessageChain>;
++        try { chain = parseMessageChain(args.messages, args.text); }
++        catch (error) { return `[bad input] ${error instanceof Error ? error.message : String(error)}`; }
++        const rawText = chain.text, mentions = chain.mentions;
+         const imageArg =
+           typeof args.image === 'string' && args.image.trim() ? args.image.trim() : undefined;
+         const voiceArg =
+@@ -1659,6 +1674,7 @@ export class QQWorld implements World {
+ 
+         const target = this.resolveTarget(toArg, replyToId);
+         if ('error' in target) return `[send failed] ${target.error}`;
++        if (target.kind !== 'group' && mentions && Object.keys(mentions).length) return '[bad input] mention_user is supported only in group chats';
+ 
+         const rep = this.resolveReplyMessageId(args.reply_to);
+         if ('error' in rep) return `[send failed] ${rep.error}`;
+@@ -1701,10 +1717,10 @@ export class QQWorld implements World {
+ 
+         if (direct) {
+           try {
+-            const outgoing = { text, replyMessageId: rep.mid, imageRef, voiceRef,
++            const outgoing = { text, mentions, replyMessageId: rep.mid, imageRef, voiceRef,
+               imageBytes: resolvedImage?.bytes, imageMime: resolvedImage?.mime,
+               voiceBytes: voiceRef ? host.blob(voiceRef)!.bytes : undefined };
+-            const { parts, rule } = this.segmentsFor(target, text);
++            const { parts, rule } = this.segmentsFor(target, text, mentions);
+             if ((rule && parts.length > 1) || (text.trim() && outgoing.imageBytes))
+               return (await this.sendSegments(target, outgoing, parts, rule, true)).receipt;
+             return await this.sendToTarget(target, outgoing);
+@@ -1713,7 +1729,7 @@ export class QQWorld implements World {
+           }
+         }
+ 
+-        this.pendingDraft = { target, text, replyMessageId: rep.mid, imageRef, voiceRef };
++        this.pendingDraft = { target, text, mentions, replyMessageId: rep.mid, imageRef, voiceRef };
+ 
+         // 排出当下已积、尚未投递的QQ会话事件(consume-once)。正文不能伪装成
+         // draft 工具结果:交回 loop 按常规投递,本轮下一次推理前它们就在眼前,
+@@ -1725,10 +1741,10 @@ export class QQWorld implements World {
+         if (rep.mid !== undefined) lines.push(this.quoteReply()
+           ? `Will quote #${rep.mid}.`
+           : 'Quote replies are disabled; this draft will be sent without quoting.');
+-        lines.push(text.trim() ? `Text: ${text}` : voiceRef ? '(voice bar, no text)' : '(image only, no text)');
+-        const { parts } = this.segmentsFor(target, text);
++        lines.push(text.trim() ? `Text: ${chainText(text, mentions)}` : voiceRef ? '(voice bar, no text)' : '(image only, no text)');
++        const { parts } = this.segmentsFor(target, text, mentions);
+         if (text.trim() && imageRef) lines.push('Text will be sent first, then the image as a separate message, with one confirmation.');
+-        if (parts.length > 1) lines.push(`Will be sent as ${parts.length} messages with short pauses: ${parts.map((part) => `「${part}」`).join(' ')}`);
++        if (parts.length > 1) lines.push(`Will be sent as ${parts.length} messages with short pauses: ${parts.map((part) => `「${chainText(part, mentions)}」`).join(' ')}`);
+         if (previewLine) lines.push(previewLine);
+         lines.push(
+           '',
+@@ -1772,8 +1788,8 @@ export class QQWorld implements World {
+               if (!got) return `[send failed] blob ${draft.voiceRef} is gone (draft kept)`;
+               voiceBytes = got.bytes;
+             }
+-            const outgoing = { text: draft.text, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, imageMime, voiceRef: draft.voiceRef, voiceBytes };
+-            const { parts, rule } = this.segmentsFor(draft.target, draft.text);
++            const outgoing = { text: draft.text, mentions: draft.mentions, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, imageMime, voiceRef: draft.voiceRef, voiceBytes };
++            const { parts, rule } = this.segmentsFor(draft.target, draft.text, draft.mentions);
+             if ((rule && parts.length > 1) || (draft.text.trim() && imageBytes)) {
+               // 发出过任何一段就清掉草稿,免得重试时重复发出已发的段;一段都没发出则照常保留
+               const result = await this.sendSegments(draft.target, outgoing, parts, rule);
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+index 9a63fb7..e043719 100644
+--- a/tests/integration/qq-segment.test.ts
++++ b/tests/integration/qq-segment.test.ts
+@@ -163,3 +163,43 @@ it('qq_send validates before sending and reports partial image failure without r
+     expect(self()).toHaveLength(1);
+   } finally { await done(); }
+ }, 15000);
++
++
++it.each(['qq_send', 'qq_draft'])('preserves inline mentions and segmentation with image last via %s', async name => {
++ const {cfg,mock,tool,ctx,incoming,self,done,memoryDir}=await fixture();
++ try {
++  cfg.worlds.qq.segment.group.enabled=true;
++  const mid=await incoming('group');
++  const images=join(memoryDir,'external','qq','images');mkdirSync(images,{recursive:true});
++  writeFileSync(join(images,'cat.png'),Buffer.from('89504e470d0a1a0a0000000d49484452','hex'));
++  const messages=[{type:'plain',text:'早上好，特别是'},{type:'mention_user',mention_user_id:'10001'},
++   {type:'plain',text:'，还有'},{type:'mention_user',mention_user_id:'10002'},{type:'plain',text:'。今天开心！'}];
++  const receipt=await tool(name).handler({reply_to:String(mid),messages,image:'mem:external/qq/images/cat.png'},ctx);
++  if(name==='qq_draft') {expect(receipt).toContain('@10001');expect(mock.outbox).toHaveLength(0);await tool('qq_confirm').handler({decision:'send'},ctx);}
++  expect(mock.outbox.map(entry=>(entry.params.message as any[]).map(part=>part.type))).toEqual([
++   ['text','at','text','at','text'],['text'],['image']]);
++  expect(mock.outbox[0].params.message).toEqual([
++   {type:'text',data:{text:'早上好，特别是'}},{type:'at',data:{qq:'10001'}},
++   {type:'text',data:{text:'，还有'}},{type:'at',data:{qq:'10002'}},{type:'text',data:{text:'。'}}]);
++  expect(self()[0].text).toContain('早上好，特别是@10001，还有@10002。');
++  expect(self().some(event=>/[\ue000-\uf8ff]/.test(event.text))).toBe(false);
++ }finally{await done();}
++},15000);
++
++it('rejects malformed chains before sending and keeps literal at text unchanged',async()=>{
++ const {mock,tool,ctx,incoming,done}=await fixture();
++ try{
++  await incoming('group');
++  for(const args of [
++   {messages:[]},{messages:[{type:'mention_user',mention_user_id:'all'}]},
++   {messages:[{type:'mention_user',mention_user_id:'a nickname'}]},
++   {messages:[{type:'image',url:'https://invalid.test'}]},
++   {text:'duplicate',messages:[{type:'plain',text:'hello'}]},
++   {to:'private:1001',messages:[{type:'mention_user',mention_user_id:'10001'}]},
++   {voice:'log:missing',messages:[{type:'mention_user',mention_user_id:'10001'}]},
++  ]) expect(await tool('qq_send').handler({to:'group:424242',...args},ctx)).toContain('[bad input]');
++  expect(mock.outbox).toHaveLength(0);
++  await tool('qq_send').handler({to:'group:424242',text:'hello @10001'},ctx);
++  expect(mock.outbox[0].params.message).toEqual([{type:'text',data:{text:'hello @10001'}}]);
++ }finally{await done();}
++},15000);
+diff --git a/tests/worlds/qq/message-chain.test.ts b/tests/worlds/qq/message-chain.test.ts
+new file mode 100644
+index 0000000..9b6a5ac
+--- /dev/null
++++ b/tests/worlds/qq/message-chain.test.ts
+@@ -0,0 +1,14 @@
++import { expect, it } from 'vitest';
++import { parseMessageChain, splitChain, chainSegments, chainText } from '../../../src/worlds/qq/message-chain.ts';
++import { SEGMENT_DEFAULTS } from '../../../src/worlds/qq/segment.ts';
++it('keeps mention identity across word splitting and protects it from cleanup/extraction',()=>{
++ const chain=parseMessageChain([{type:'plain',text:'Hi\ue000'},{type:'mention_user',mention_user_id:'10001'},
++ {type:'plain',text:'。Bye'},{type:'mention_user',mention_user_id:'10001'},{type:'plain',text:'！'}],undefined);
++ const rule={...SEGMENT_DEFAULTS().private,mode:'words' as const,words:'。 ！'};
++ const parts=splitChain(chain.text,rule,chain.mentions);
++ expect(parts.map(part=>chainText(part,chain.mentions))).toEqual(['Hi\ue000@10001','Bye@10001']);
++ expect(parts.flatMap(part=>chainSegments(part,chain.mentions)).filter(part=>part.type==='at')).toHaveLength(2);
++ expect(splitChain(chain.text,{...rule,cleanup:'[\ue000-\uf8ff]'},chain.mentions)).toEqual([chain.text]);
++ expect(splitChain(chain.text,{...rule,mode:'regex',regex:'[A-Za-z]+'},chain.mentions)).toEqual([chain.text]);
++ expect(splitChain(chain.text,{...rule,enabled:false},chain.mentions)).toEqual([chain.text]);
++});

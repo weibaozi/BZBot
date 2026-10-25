@@ -31,3 +31,5 @@
 | `0012-world-mounted-list.patch` | `e3b214e` + `0001`–`0011` | `WorldContext` 新增可选的 `mountedWorlds()`：返回此刻挂载的 World id（含自己），每次调用现读，随激活与停用变化。技能 World（`packages/cortico-world-skills`）据此只列出所需 World 在场的技能。只改装配层的上下文构造与 `docs/worlds.md`，带装配层激活与停用的测试。 | 未提交；可考虑提上游 |
 
 | `0013-qq-config-tabs.patch` | `e3b214e` + `0001`–`0012` | QQ 分段回复拆成独立配置组；World 配置页多组时以分类按钮切换，保留所有表单和自动保存。配置路径、数值与发送逻辑不变，标题覆盖 11 种语言，带分组契约和分段发送测试。 | 未提交；可考虑提上游 |
+
+| `0014-qq-message-chain.patch` | `e3b214e` + `0001`–`0013` | QQ 发送和兼容草稿支持有序 `messages`（plain / mention_user），群聊可句中多次 @；保留 text、分段及图片最后单独发送。自定义正则破坏提及时整条发送；非法参数先拒绝，事件记录显示实际 QQ 号。同步提示词，带真实 OneBot、事件库集成测试及消息链测试。 | 未提交；不一定提上游 |
