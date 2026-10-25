@@ -2,7 +2,7 @@
 
 ## 0.1.2
 
-- The allowlist now also includes the global trusted QQ numbers (Settings → Persona → Global variables); the plugin's own field is an additional list.
+- The allowlist now also includes the global trusted QQ numbers (Settings → Global variables); the plugin's own field is an additional list.
 
 ## 0.1.1
 

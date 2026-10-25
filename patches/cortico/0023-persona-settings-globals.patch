@@ -1,27 +1,31 @@
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 2d3c5f7..32365e9 100644
+index 2d3c5f7..010bec0 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -35,6 +35,7 @@
  | `context` | `keepPastThinking true` | 发给模型前的处理;阶段预算与首轮对话开关归 Persona 的段 |
  | `logging` | `file debug`、`stdout info`、`areas ''` | 日志门槛与按区域覆盖,热改 |
  | `usage.rates.<币种>` | CNY、EUR、JPY、KRW、TWD、BRL、RUB 各取 2026-10-10 的中间价 | 1 USD 合多少该币种;用量报告在 USD 与该币种之间换算都用它,0 表示该币种不参与换算。只认这七种,热改 |
-+| `globals.trustedQQ` | 空 | 全局变量:所有插件共用的可信 QQ 号,逗号分隔,热改。本身不授予权限,由各 World 经 `WorldContext.globals()` 读取后自行决定用途;在设置页「人格」编辑 |
++| `globals.trustedQQ` | 空 | 全局变量:所有插件共用的可信 QQ 号,逗号分隔,热改。本身不授予权限,由各 World 经 `WorldContext.globals()` 读取后自行决定用途;在设置页「全局变量」或 Persona 页的「配置」编辑 |
  | `worlds.<id>` | 各 World 自定 | `enabled` 控制是否启用;其余字段由 World 定义 |
  | `language` | 系统区域 | WebUI 默认语言,取 `src/core/language.ts` 的 `LANGUAGES` 之一(`zh` 为简体中文),浏览器可改(见 [webui.md](webui.md)) |
  
 diff --git a/docs/webui.md b/docs/webui.md
-index ee78f1b..5b04ea2 100644
+index ee78f1b..6e69239 100644
 --- a/docs/webui.md
 +++ b/docs/webui.md
-@@ -55,7 +55,9 @@ WebUI 不终结 TLS。经公网使用时放在终结 HTTPS 的反向代理后面
+@@ -51,11 +51,12 @@ WebUI 不终结 TLS。经公网使用时放在终结 HTTPS 的反向代理后面
+ `mem:` 回应 `no-store`,认不出或已不在回 404。回应带 `X-Content-Type-Options: nosniff` 与
+ `Content-Security-Policy: sandbox`。
+ 
+-左栏三组:Core(框架自己的页)、Persona & Memory(Persona 页、Memory 页、系统提示词)、World(总览与各实例)。
++左栏三组:Core(框架自己的页,最后一行「设置」与底栏齿轮进同一页)、Persona & Memory(Persona 页、Memory 页、系统提示词)、World(总览与各实例)。
  左栏顶上是框架字标,底部是这一台 bot 的头像与展示名(`displayName`),展示名下面写运行中或已暂停。
  根 URL 不带 hash 时跳转到 `live`；未知路由不显示页面内容，侧栏仍可导航。
  存储项按归属分页:Core 的在运行诊断的「数据」子页,一键清空也在那里;World、Persona 与 Memory 页
 -各有「数据」页签,列本页声明的项。配置组同理:Core 的在运行诊断的「配置」子页,其余在声明方自己的页。
 +各有「数据」页签,列本页声明的项。配置组同理:Core 的在运行诊断的「配置」子页,其余在声明方自己的页;
-+例外是 Persona:它认领的配置组(模型请求超时、全局变量与 Persona 自己声明的组)集中在设置页的「人格」一栏,
-+提示词模板在「系统提示词」页,Persona 页只留运维面板与「工具表」(直接打开 `~config` 路由仍可用)。
++Persona 认领的配置组(模型请求超时、全局变量与 Persona 自己声明的组)另在设置页各占一栏,和 Persona 页的「配置」页签改的是同一份。
  工具表是装配好的整份,只挂在 Persona 页的「工具表」页签上。
  World 页与 Persona 页的 manifest 带 `undeclared`:运行中出现、不在定义自描述里的工具名与事件 type。
  
@@ -88,12 +92,12 @@ index a2a8554..20caa0e 100644
    timezone: SYSTEM_TIMEZONE,
 diff --git a/src/core/globals.ts b/src/core/globals.ts
 new file mode 100644
-index 0000000..6b846e1
+index 0000000..c1d4bc8
 --- /dev/null
 +++ b/src/core/globals.ts
 @@ -0,0 +1,44 @@
 +/**
-+ * 全局变量：部署级、所有 World 都能读的设置，在 Persona 的设置页编辑，立即生效。
++ * 全局变量：部署级、所有 World 都能读的设置，在设置页「全局变量」或 Persona 页的「配置」编辑，立即生效。
 + * 现在只有可信 QQ 白名单；它本身不授予任何权限，用不用、怎么用由各插件决定（比如存图、委派）。
 + */
 +import type { ConfigGroup } from './config-schema.ts';
@@ -150,34 +154,131 @@ index 8cc1da7..576e0e7 100644
    displayName: string;
    timezone: string;
 diff --git a/src/web/client/features/settings/index.ts b/src/web/client/features/settings/index.ts
-index 60ab44d..a51c210 100644
+index 60ab44d..3f50860 100644
 --- a/src/web/client/features/settings/index.ts
 +++ b/src/web/client/features/settings/index.ts
-@@ -2,6 +2,7 @@ import { pageIntro } from '../../ui/page.ts';
+@@ -1,7 +1,10 @@
+ import { pageIntro } from '../../ui/page.ts';
++import { get } from '../../core/api.ts';
  import { mountAppearance } from '../appearance/index.ts';
++import { S as CORE } from '../core/strings.ts';
  import type { FeatureContext, FrameworkFeature } from '../feature.ts';
  import { mountGeneral } from './general.ts';
-+import { mountPersonaSettings } from './persona.ts';
++import { mountConfigGroup } from './persona.ts';
  import { S } from './strings.ts';
  
  interface SettingSection {
-@@ -19,6 +20,13 @@ const SECTIONS: readonly SettingSection[] = [
-     description: S.generalDesc,
-     mount: mountGeneral,
-   },
-+  {
-+    id: 'persona',
-+    label: S.persona,
-+    description: S.personaDesc,
-+    need: 'config',
-+    mount: mountPersonaSettings,
-+  },
-   {
-     id: 'appearance',
-     label: S.appearance,
+@@ -12,20 +15,21 @@ interface SettingSection {
+   mount(ctx: FeatureContext): void | Promise<void>;
+ }
+ 
+-const SECTIONS: readonly SettingSection[] = [
+-  {
+-    id: 'general',
+-    label: S.general,
+-    description: S.generalDesc,
+-    mount: mountGeneral,
+-  },
+-  {
+-    id: 'appearance',
+-    label: S.appearance,
+-    description: S.appearanceDesc,
+-    mount: (ctx) => mountAppearance(ctx, { embedded: true }),
+-  },
+-];
++const GENERAL: SettingSection = {
++  id: 'general',
++  label: S.general,
++  description: S.generalDesc,
++  mount: mountGeneral,
++};
++
++const APPEARANCE: SettingSection = {
++  id: 'appearance',
++  label: S.appearance,
++  description: S.appearanceDesc,
++  mount: (ctx) => mountAppearance(ctx, { embedded: true }),
++};
++
++interface ConfigGroupEntry { group: { id: string; owner: string; schema: { title?: string } } }
+ 
+ export function mountSettings(ctx: FeatureContext): void {
+   const { ui } = ctx;
+@@ -35,7 +39,6 @@ export function mountSettings(ctx: FeatureContext): void {
+   index.setAttribute('aria-label', S.sectionsAria);
+   index.setAttribute('role', 'tablist');
+   const content = ui.h('div', 'settings-content');
+-  const visible = SECTIONS.filter((section) => !section.need || ctx.capabilities[section.need] === true);
+   const mounted: Array<{ button: HTMLButtonElement; section: HTMLElement }> = [];
+ 
+   const select = (id: string): void => {
+@@ -47,37 +50,54 @@ export function mountSettings(ctx: FeatureContext): void {
+     }
+   };
+ 
+-  for (const spec of visible) {
++  /** 加一栏;给了 `before` 就插在那一栏前面(Persona 的配置组晚到,插在外观之前)。 */
++  const add = (spec: SettingSection, before?: { button: HTMLButtonElement; section: HTMLElement }) => {
+     const section = ui.h('section', 'settings-section');
+     section.id = `settings-${spec.id}`;
+     const heading = ui.h('div', 'settings-section-head');
+-    heading.append(ui.h('h2', null, spec.label), ui.h('p', null, spec.description));
++    heading.append(ui.h('h2', null, spec.label));
++    if (spec.description) heading.append(ui.h('p', null, spec.description));
+     const body = ui.h('div', 'settings-section-body');
+     section.append(heading, body);
+-    content.appendChild(section);
++    content.insertBefore(section, before?.section ?? null);
+ 
+     const jump = ui.h('button', 'settings-jump', spec.label);
+     jump.type = 'button';
+     jump.setAttribute('role', 'tab');
+     jump.setAttribute('aria-controls', section.id);
+     jump.addEventListener('click', () => select(spec.id), { signal: ctx.signal });
+-    index.appendChild(jump);
+-    mounted.push({ button: jump, section });
++    index.insertBefore(jump, before?.button ?? null);
++    const entry = { button: jump, section };
++    mounted.splice(before ? mounted.indexOf(before) : mounted.length, 0, entry);
+ 
+     const child = { ...ctx, root: body };
+     void Promise.resolve(spec.mount(child)).catch(ctx.onError);
+-  }
++    return entry;
++  };
+ 
++  add(GENERAL);
++  const appearance = add(APPEARANCE);
+   layout.append(index, content);
+   ctx.root.append(intro, layout);
+-  if (visible[0]) select(visible[0].id);
++  select(GENERAL.id);
++
++  // Persona 认领的配置组(模型请求超时、全局变量、Persona 自己声明的组)各占一栏,标题取组自己的标题。
++  if (ctx.capabilities.config === true) {
++    void get<{ groups?: ConfigGroupEntry[] }>('/api/config', { signal: ctx.signal }).then((payload) => {
++      if (ctx.signal.aborted) return;
++      for (const { group } of payload.groups ?? []) {
++        if (group.owner !== 'persona') continue;
++        add({ id: `persona-${group.id}`, label: group.schema.title || group.id, description: '', mount: (child) => mountConfigGroup(child, group.id) }, appearance);
++      }
++    }).catch(ctx.onError);
++  }
+ }
+ 
+-// 入口是底栏那颗齿轮,不占左栏一行;`hidden` 只保留路由。
++// 齿轮在底栏;左栏 Core 组最后一行也是它,两处进的是同一页。
+ export const settingsFeature: FrameworkFeature = {
+   route: 'settings',
+   label: S.navLabel,
+   icon: 'settings',
+-  navMode: 'hidden',
++  navGroup: CORE.navGroup,
+   mount: mountSettings,
+ };
 diff --git a/src/web/client/features/settings/persona.ts b/src/web/client/features/settings/persona.ts
 new file mode 100644
-index 0000000..c1322b0
+index 0000000..3af75da
 --- /dev/null
 +++ b/src/web/client/features/settings/persona.ts
 @@ -0,0 +1,21 @@
@@ -186,202 +287,152 @@ index 0000000..c1322b0
 +import { S } from './strings.ts';
 +
 +/**
-+ * 「人格」一栏：归 Persona 的配置组（模型请求超时、全局变量和 Persona 自己声明的组）集中在设置页，
-+ * Persona 页只留运维操作。保存与校验走通用配置视图，和原来 Persona 页的配置页签一样。
++ * 设置页里 Persona 认领的一个配置组(模型请求超时、全局变量或 Persona 自己声明的组),一组一栏。
++ * 保存与校验走通用配置视图;Persona 页的「配置」页签里同样能改这几组。
 + */
-+export async function mountPersonaSettings(ctx: FeatureContext): Promise<void> {
++export async function mountConfigGroup(ctx: FeatureContext, groupId: string): Promise<void> {
 +  const view = createConfigView({
 +    ui: ctx.ui,
 +    lifecycle: ctx.lifecycle,
 +    signal: ctx.signal,
-+    filter: (group) => group.owner === 'persona',
++    filter: (group) => group.id === groupId,
 +    showOwner: false,
-+    groupTabs: true,
++    groupTabs: false,
 +    emptyText: S.personaEmpty,
 +  });
 +  ctx.root.append(view.el);
 +  await view.load();
 +}
 diff --git a/src/web/client/features/settings/strings.de.ts b/src/web/client/features/settings/strings.de.ts
-index be5c07b..62b79bb 100644
+index be5c07b..a13d101 100644
 --- a/src/web/client/features/settings/strings.de.ts
 +++ b/src/web/client/features/settings/strings.de.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Abmelden',
    appearance: 'Darstellung',
    appearanceDesc: 'WebUI-Theme, Hell-/Dunkelmodus und eigene Farbpaletten.',
-+  persona: 'Persona',
-+  personaDesc: 'Wie die Persona läuft: Zeitlimits für Modellanfragen, kognitiver Rhythmus und globale Variablen für alle Erweiterungen. Änderungen werden automatisch gespeichert; markierte Punkte gelten nach einem Neustart, alle anderen sofort.',
-+  personaEmpty: 'Diese Persona hat keine einstellbaren Optionen.',
++  personaEmpty: 'Diese Gruppe hat keine einstellbaren Optionen.',
  
    pageTitle: 'Einstellungen',
    sectionsAria: 'Einstellungsbereiche',
 diff --git a/src/web/client/features/settings/strings.es-419.ts b/src/web/client/features/settings/strings.es-419.ts
-index 97a74fa..b2d95f2 100644
+index 97a74fa..eafc3c6 100644
 --- a/src/web/client/features/settings/strings.es-419.ts
 +++ b/src/web/client/features/settings/strings.es-419.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Cerrar sesión',
    appearance: 'Apariencia',
    appearanceDesc: 'Tema de la WebUI, modo claro/oscuro y paletas personalizadas.',
-+  persona: 'Persona',
-+  personaDesc: 'Cómo funciona la persona: límites de las solicitudes al modelo, ritmo cognitivo y variables globales compartidas por todas las extensiones. Los cambios se guardan solos; lo marcado como que requiere reinicio se aplica después de reiniciar y el resto de inmediato.',
-+  personaEmpty: 'Esta persona no tiene ajustes modificables.',
++  personaEmpty: 'Este grupo no tiene ajustes modificables.',
  
    pageTitle: 'Configuración',
    sectionsAria: 'Secciones de configuración',
 diff --git a/src/web/client/features/settings/strings.fr.ts b/src/web/client/features/settings/strings.fr.ts
-index f18f824..0e2bf32 100644
+index f18f824..76ea521 100644
 --- a/src/web/client/features/settings/strings.fr.ts
 +++ b/src/web/client/features/settings/strings.fr.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Se déconnecter',
    appearance: 'Apparence',
    appearanceDesc: 'Thème de la WebUI, mode clair/sombre et palettes personnalisées.',
-+  persona: 'Persona',
-+  personaDesc: 'Fonctionnement du persona : délais des requêtes du modèle, rythme cognitif et variables globales partagées par toutes les extensions. Enregistrement automatique ; les éléments signalés s’appliquent après redémarrage, les autres immédiatement.',
-+  personaEmpty: 'Ce persona n’a aucun réglage modifiable.',
++  personaEmpty: 'Ce groupe n’a aucun réglage modifiable.',
  
    pageTitle: 'Paramètres',
    sectionsAria: 'Sections des paramètres',
 diff --git a/src/web/client/features/settings/strings.it.ts b/src/web/client/features/settings/strings.it.ts
-index bb94f88..027937a 100644
+index bb94f88..5be7f2b 100644
 --- a/src/web/client/features/settings/strings.it.ts
 +++ b/src/web/client/features/settings/strings.it.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Esci',
    appearance: 'Aspetto',
    appearanceDesc: 'Tema della WebUI, modalità chiara/scura e tavolozze personalizzate.',
-+  persona: 'Persona',
-+  personaDesc: 'Come funziona la persona: timeout delle richieste al modello, ritmo cognitivo e variabili globali condivise da tutte le estensioni. Le modifiche si salvano da sole; le voci segnalate valgono dopo il riavvio, le altre subito.',
-+  personaEmpty: 'Questa persona non ha impostazioni modificabili.',
++  personaEmpty: 'Questo gruppo non ha impostazioni modificabili.',
  
    pageTitle: 'Impostazioni',
    sectionsAria: 'Sezioni delle impostazioni',
 diff --git a/src/web/client/features/settings/strings.ja.ts b/src/web/client/features/settings/strings.ja.ts
-index b7384bc..8de4ccd 100644
+index b7384bc..96983ee 100644
 --- a/src/web/client/features/settings/strings.ja.ts
 +++ b/src/web/client/features/settings/strings.ja.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'ログアウト',
    appearance: '外観',
    appearanceDesc: 'WebUI のテーマ、ライト／ダークモード、カスタム配色。',
-+  persona: 'ペルソナ',
-+  personaDesc: 'ペルソナの動作設定：モデル要求のタイムアウト、認知のリズム、全プラグイン共通のグローバル変数。変更は自動保存され、再起動が必要な項目は再起動後、それ以外はすぐに反映されます。',
-+  personaEmpty: 'このペルソナには調整できる設定がありません。',
++  personaEmpty: 'このグループには調整できる設定がありません。',
  
    pageTitle: '設定',
    sectionsAria: '設定のセクション',
 diff --git a/src/web/client/features/settings/strings.ko.ts b/src/web/client/features/settings/strings.ko.ts
-index 7587879..7acd482 100644
+index 7587879..e73f47a 100644
 --- a/src/web/client/features/settings/strings.ko.ts
 +++ b/src/web/client/features/settings/strings.ko.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: '로그아웃',
    appearance: '모양',
    appearanceDesc: 'WebUI 테마, 라이트/다크 모드, 사용자 지정 색 구성표.',
-+  persona: '페르소나',
-+  personaDesc: '페르소나 실행 설정: 모델 요청 제한 시간, 인지 리듬, 모든 플러그인이 공유하는 전역 변수. 변경은 자동 저장되며, 재시작이 필요한 항목은 재시작 후, 나머지는 즉시 적용됩니다.',
-+  personaEmpty: '이 페르소나에는 조정할 설정이 없습니다.',
++  personaEmpty: '이 그룹에는 조정할 설정이 없습니다.',
  
    pageTitle: '설정',
    sectionsAria: '설정 섹션',
 diff --git a/src/web/client/features/settings/strings.pt-BR.ts b/src/web/client/features/settings/strings.pt-BR.ts
-index aab4be7..8688d1b 100644
+index aab4be7..557f695 100644
 --- a/src/web/client/features/settings/strings.pt-BR.ts
 +++ b/src/web/client/features/settings/strings.pt-BR.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Sair',
    appearance: 'Aparência',
    appearanceDesc: 'Tema da WebUI, modo claro/escuro e paletas personalizadas.',
-+  persona: 'Persona',
-+  personaDesc: 'Como a persona funciona: tempos limite das solicitações, ritmo cognitivo e variáveis globais compartilhadas por todas as extensões. As alterações são salvas automaticamente; itens marcados valem após reiniciar, os demais na hora.',
-+  personaEmpty: 'Esta persona não tem configurações ajustáveis.',
++  personaEmpty: 'Este grupo não tem configurações ajustáveis.',
  
    pageTitle: 'Configurações',
    sectionsAria: 'Seções das configurações',
 diff --git a/src/web/client/features/settings/strings.ru.ts b/src/web/client/features/settings/strings.ru.ts
-index df54b34..271fe70 100644
+index df54b34..488ea4d 100644
 --- a/src/web/client/features/settings/strings.ru.ts
 +++ b/src/web/client/features/settings/strings.ru.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: 'Выйти',
    appearance: 'Внешний вид',
    appearanceDesc: 'Тема WebUI, светлый/тёмный режим и пользовательские палитры.',
-+  persona: 'Персона',
-+  personaDesc: 'Как работает персона: тайм-ауты запросов модели, когнитивный ритм и глобальные переменные, общие для всех расширений. Изменения сохраняются автоматически; отмеченные пункты действуют после перезапуска, остальные сразу.',
-+  personaEmpty: 'У этой персоны нет настраиваемых параметров.',
++  personaEmpty: 'В этой группе нет настраиваемых параметров.',
  
    pageTitle: 'Настройки',
    sectionsAria: 'Разделы настроек',
 diff --git a/src/web/client/features/settings/strings.ts b/src/web/client/features/settings/strings.ts
-index 6efb8ff..9b4c231 100644
+index 6efb8ff..4696f3e 100644
 --- a/src/web/client/features/settings/strings.ts
 +++ b/src/web/client/features/settings/strings.ts
-@@ -21,6 +21,9 @@ const zh = {
+@@ -21,6 +21,7 @@ const zh = {
    signOut: '退出登录',
    appearance: '外观',
    appearanceDesc: 'WebUI 主题、明暗模式与自定义配色。',
-+  persona: '人格',
-+  personaDesc: '人格的运行设置：模型请求超时、认知节奏，以及所有插件共用的全局变量。修改自动保存，标注需重启的项在重启后生效，其余立即生效。',
-+  personaEmpty: '当前人格没有可调的设置。',
++  personaEmpty: '这一组没有可调的设置。',
  
    pageTitle: '设置',
    sectionsAria: '设置分区',
-@@ -39,6 +42,9 @@ export const en: typeof zh = {
+@@ -39,6 +40,7 @@ export const en: typeof zh = {
    signOut: 'Sign out',
    appearance: 'Appearance',
    appearanceDesc: 'WebUI theme, light/dark mode and custom palettes.',
-+  persona: 'Persona',
-+  personaDesc: 'How the persona runs: model request timeouts, cognitive rhythm, and global variables shared by every plugin. Changes save automatically; items marked as needing a restart apply after restarting, the rest immediately.',
-+  personaEmpty: 'This persona has no adjustable settings.',
++  personaEmpty: 'This group has no adjustable settings.',
  
    pageTitle: 'Settings',
    sectionsAria: 'Settings sections',
 diff --git a/src/web/client/features/settings/strings.zh-Hant.ts b/src/web/client/features/settings/strings.zh-Hant.ts
-index 21ed62f..36bbbbf 100644
+index 21ed62f..3f5ce63 100644
 --- a/src/web/client/features/settings/strings.zh-Hant.ts
 +++ b/src/web/client/features/settings/strings.zh-Hant.ts
-@@ -12,6 +12,9 @@ export const S: Partial<typeof en> = {
+@@ -12,6 +12,7 @@ export const S: Partial<typeof en> = {
    signOut: '登出',
    appearance: '外觀',
    appearanceDesc: 'WebUI 主題、明暗模式與自訂配色。',
-+  persona: '人格',
-+  personaDesc: '人格的執行設定：模型請求逾時、認知節奏，以及所有外掛共用的全域變數。修改會自動儲存，標註需重新啟動的項目在重新啟動後生效，其餘立即生效。',
-+  personaEmpty: '目前的人格沒有可調整的設定。',
++  personaEmpty: '這一組沒有可調整的設定。',
  
    pageTitle: '設定',
    sectionsAria: '設定分區',
-diff --git a/src/web/client/webui-pages/host.ts b/src/web/client/webui-pages/host.ts
-index 57da834..3bc85e2 100644
---- a/src/web/client/webui-pages/host.ts
-+++ b/src/web/client/webui-pages/host.ts
-@@ -42,6 +42,11 @@ function asArray<T>(v: readonly T[] | undefined): readonly T[] {
- }
- 
- /** 页签只给独立面板；带 slot 的由宿主面板挂。 */
-+/** Persona 页的配置组归设置页「人格」一栏，提示词模板归「系统提示词」页；页内不再出这两个页签。 */
-+function settingsElsewhere(page: WebUiPageManifest): boolean {
-+  return page.kind === 'persona';
-+}
-+
- function tabbed(page: WebUiPageManifest): readonly WebUiPanelManifest[] {
-   return asArray(page.panels).filter((p) => p.slot === undefined);
- }
-@@ -579,8 +584,9 @@ export class WebUiPageHost {
-     if (undeclared.length) chrome.appendChild(ui.msgline(undeclared.join(' · ')));
- 
-     const panels = tabbed(page);
--    const prompts = asArray(page.prompts);
--    const configGroups = this.configGroupsOf(page);
-+    // Persona 的配置与提示词模板在设置页「人格」和「系统提示词」页编辑，Persona 页只留运维页签。
-+    const prompts = settingsElsewhere(page) ? [] : asArray(page.prompts);
-+    const configGroups = settingsElsewhere(page) ? [] : this.configGroupsOf(page);
-     const storage = this.storageOf(page);
-     const tools = this.toolsTabOf(page);
-     if (panels.length + (configGroups.length ? 1 : 0) + (prompts.length ? 1 : 0)
 diff --git a/src/world.ts b/src/world.ts
-index e36ad43..0f463bf 100644
+index e36ad43..fd4e16e 100644
 --- a/src/world.ts
 +++ b/src/world.ts
 @@ -14,6 +14,7 @@ import { updateJsonObject, writeSecretFile } from './config-file.ts';
@@ -396,7 +447,7 @@ index e36ad43..0f463bf 100644
    readonly models: ModelHub;
    /** 此刻挂载的 World id(含本 World);每次调用现读,激活与停用随即反映。宿主未接入时缺省。 */
    mountedWorlds?(): readonly string[];
-+  /** 全局变量（Persona 设置页的「全局变量」），每次调用现读，改完立即反映。宿主未接入时缺省。 */
++  /** 全局变量（设置页「全局变量」），每次调用现读，改完立即反映。宿主未接入时缺省。 */
 +  globals?(): import('./core/globals.ts').Globals;
  }
  
@@ -461,50 +512,36 @@ index 0000000..014b514
 +  loaded.config.globals = { trustedQQ: '361270936' };
 +  expect(ctx!.globals?.()).toEqual({ trustedQQ: ['361270936'] });
 +});
-diff --git a/tests/web/hardening-webui.test.ts b/tests/web/hardening-webui.test.ts
-index 5f55b9d..dd9fc5d 100644
---- a/tests/web/hardening-webui.test.ts
-+++ b/tests/web/hardening-webui.test.ts
-@@ -311,6 +311,8 @@ interface ProviderDecl {
-   configGroups?: string[];
-   /** 这个 provider 声明的存储项,数据页签据此只画自己那几项。 */
-   storageParts?: Array<{ owner: string; key: string }>;
-+  /** 这个 provider 声明的提示词模板。 */
-+  prompts?: Array<{ key: string; title: string }>;
- }
+diff --git a/tests/integration/system.test.ts b/tests/integration/system.test.ts
+index c2c3a2a..54722b8 100644
+--- a/tests/integration/system.test.ts
++++ b/tests/integration/system.test.ts
+@@ -211,7 +211,7 @@ describe('全系统集成(控制台对话链路)', () => {
+     ]);
  
- interface Stage {
-@@ -1708,6 +1710,22 @@ describe('工具表页签', () => {
-     expect(world.slotText()).not.toContain('工具库');
-   });
- 
-+  it('Persona 页不出「配置」与「提示词模板」页签：它们在设置页「人格」和「系统提示词」页', async () => {
-+    const stage = makeStage([{
-+      ...personaPage,
-+      configGroups: ['persona'],
-+      prompts: [{ key: 'constitution', title: '宪法' }, { key: 'orientation', title: 'ORIENTATION' }],
-+    }], {});
-+    await stage.host.load();
-+    await stage.host.show('persona:a', 'one');
-+    await flush();
-+    const tabs = stage.chrome()!.textContent;
-+    expect(tabs).toContain('面板一');
-+    expect(tabs).toContain('工具表');
-+    expect(tabs).not.toContain('配置');
-+    expect(tabs).not.toContain('提示词模板');
-+  });
-+
-   it('分栏渲染,筛选把不命中的卡与空栏都收起来', async () => {
-     const stage = makeStage([personaPage], {});
-     await stage.host.load();
+     expect(g.groups.map((x) => x.group.id)).toEqual([
+-      'core', 'model-timeouts', PERSONA_CONFIG_GROUP.id,
++      'core', 'model-timeouts', 'globals', PERSONA_CONFIG_GROUP.id,
+       'world:console', 'world:qq', 'world:qq:group-reply', 'world:qq:segment', 'world:bilibili',
+       'world:minecraft', 'world:minecraft:rhythm', 'world:minecraft:client', 'world:minecraft:player',
+       'world:websearch',
+@@ -219,7 +219,7 @@ describe('全系统集成(控制台对话链路)', () => {
+     ]);
+     // id 标识具体实例；owner 标识与实例无关的架构角色。
+     expect(g.groups.map((x) => x.group.owner)).toEqual([
+-      'core', 'persona', 'persona',
++      'core', 'persona', 'persona', 'persona',
+       'world:console', 'world:qq', 'world:qq', 'world:qq', 'world:bilibili',
+       'world:minecraft', 'world:minecraft', 'world:minecraft', 'world:minecraft',
+       'world:websearch',
 diff --git a/tests/web/settings-persona.test.ts b/tests/web/settings-persona.test.ts
 new file mode 100644
-index 0000000..e1489c9
+index 0000000..95a23ff
 --- /dev/null
 +++ b/tests/web/settings-persona.test.ts
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,77 @@
 +/** @vitest-environment jsdom */
-+/** The Settings page has its own 人格 section holding every persona-owned config group. */
++/** The Settings page gives each persona-owned config group its own menu item, before 外观. */
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 +import { createWebUi } from '../../src/web/client/ui/index.ts';
 +import { Lifecycle } from '../../src/web/client/core/lifecycle.ts';
@@ -516,6 +553,7 @@ index 0000000..e1489c9
 +    { group: { id: 'core', owner: 'core', schema: { title: '主循环', properties: { 'loop.idleMs': { type: 'integer', title: '空转间隔' } } } }, values: { 'loop.idleMs': 1 } },
 +    { group: { id: 'model-timeouts', owner: 'persona', schema: { title: '模型请求超时', properties: { 'modelTimeouts.totalSec': { type: 'integer', title: '整轮时限' } } } }, values: { 'modelTimeouts.totalSec': 120 } },
 +    { group: { id: 'globals', owner: 'persona', schema: { title: '全局变量', properties: { 'globals.trustedQQ': { type: 'string', title: '白名单 QQ' } } } }, values: { 'globals.trustedQQ': '361270936' } },
++    { group: { id: 'corti-soulmate', owner: 'persona', schema: { title: '认知节奏', properties: { 'tick.dayIntervalMinutes': { type: 'integer', title: '白天间隔' } } } }, values: { 'tick.dayIntervalMinutes': 30 } },
 +    { group: { id: 'world:qq', owner: 'world:qq', schema: { title: 'QQ 连接', properties: { 'worlds.qq.wsUrl': { type: 'string', title: '地址' } } } }, values: { 'worlds.qq.wsUrl': 'ws://x' } },
 +  ],
 +};
@@ -545,27 +583,39 @@ index 0000000..e1489c9
 +  };
 +}
 +
-+it('shows only persona-owned groups, global variables included', async () => {
-+  const { mountPersonaSettings } = await import('../../src/web/client/features/settings/persona.ts');
++const tabs = (root: HTMLElement) => [...root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
++
++it('shows one config group per section and nothing else', async () => {
++  const { mountConfigGroup } = await import('../../src/web/client/features/settings/persona.ts');
 +  const ctx = context({ config: true });
-+  await mountPersonaSettings(ctx);
++  await mountConfigGroup(ctx, 'globals');
 +  const text = ctx.root.textContent!;
-+  expect(text).toContain('模型请求超时');
-+  expect(text).toContain('全局变量');
-+  expect(text).not.toContain('主循环');
++  expect(text).toContain('白名单 QQ');
++  expect(text).not.toContain('整轮时限');
 +  expect(text).not.toContain('QQ 连接');
 +});
 +
-+it('adds 人格 as its own settings section, only where config is mounted', async () => {
++it('lists each persona group as its own menu item between 通用 and 外观, only where config is mounted', async () => {
 +  const { mountSettings } = await import('../../src/web/client/features/settings/index.ts');
 +  const withConfig = context({ config: true });
 +  mountSettings(withConfig);
-+  const tabs = [...withConfig.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
-+  expect(tabs).toEqual(['通用', '人格', '外观']);
++  await vi.waitFor(() => expect(tabs(withConfig.root)).toEqual(['通用', '模型请求超时', '全局变量', '认知节奏', '外观']));
++  // 选中的仍是第一栏,点哪一栏就切到哪一栏。
++  expect(withConfig.root.querySelector('[aria-selected="true"]')?.textContent).toBe('通用');
++  (withConfig.root.querySelectorAll('[role="tab"]')[2] as HTMLButtonElement).click();
++  expect(withConfig.root.querySelector('.settings-section.active')?.id).toBe('settings-persona-globals');
 +
 +  const without = context({});
 +  mountSettings(without);
-+  expect([...without.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(['通用', '外观']);
++  await new Promise((resolve) => setTimeout(resolve, 20));
++  expect(tabs(without.root)).toEqual(['通用', '外观']);
++});
++
++it('puts 设置 in the Core group of the sidebar', async () => {
++  const { settingsFeature } = await import('../../src/web/client/features/settings/index.ts');
++  const { S: CORE } = await import('../../src/web/client/features/core/strings.ts');
++  expect(settingsFeature).toMatchObject({ route: 'settings', navGroup: CORE.navGroup });
++  expect('navMode' in settingsFeature).toBe(false);
 +});
 diff --git a/tsconfig.json b/tsconfig.json
 index d7d13c5..aeffbb4 100644

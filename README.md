@@ -20,7 +20,7 @@ cd vendor\cortico; node bin\cortico.mjs yuki
 
 - 模型供应商：登录 ChatGPT / Codex，其他供应商填 API key。
 - QQ：连接地址、token、要监听的私聊和群。
-- 设置 → 人格 → 全局变量：白名单 QQ。
+- 设置 → 全局变量：白名单 QQ。
 - 主动聊天的对象、日程条目，以及人格提示词（宪法），按需填写。
 
 ## 模板从哪来

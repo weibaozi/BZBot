@@ -7,7 +7,7 @@ export interface VisualConfig extends WorldSection {
   consoleCanSave: boolean;
 }
 export const VISUAL_DEFAULTS: VisualConfig = { enabled: false, savers: '', consoleCanSave: true };
-/** 能让她存图的 QQ：设置页「人格 → 全局变量」的白名单 QQ，加上本插件自己的名单。 */
+/** 能让她存图的 QQ：设置页「全局变量」的白名单 QQ，加上本插件自己的名单。 */
 export function saversOf(cfg: VisualConfig, trusted: readonly string[] = []): Set<string> {
   return new Set([...trusted, ...cfg.savers.split(/[\s,，]+/)].filter(s => /^\d{1,20}$/.test(s)));
 }
@@ -16,7 +16,7 @@ export function visualConfigGroups(language: Language) {
   return [{ id: 'world:visual', owner: 'world:visual' as const, schema: { type: 'object' as const,
     title: zh ? '图像资料设置' : 'Visual library', properties: {
       'worlds.visual.savers': { type: 'string' as const, title: zh ? '额外的存图白名单' : 'Additional picture savers', 'x-hot': true,
-        description: zh ? '设置 → 人格 → 全局变量里的白名单 QQ 总是可以；这里再加别的 QQ 号，多个用逗号分隔。' : 'Trusted QQ numbers from Settings → Persona → Global variables are always allowed; add more QQ numbers here, comma separated.' },
+        description: zh ? '设置 → 全局变量里的白名单 QQ 总是可以；这里再加别的 QQ 号，多个用逗号分隔。' : 'Trusted QQ numbers from Settings → Global variables are always allowed; add more QQ numbers here, comma separated.' },
       'worlds.visual.consoleCanSave': { type: 'boolean' as const, title: zh ? '控制台发的图也能存' : 'Allow pictures sent from the console', 'x-hot': true },
     } } }];
 }

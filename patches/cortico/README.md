@@ -50,4 +50,4 @@
 
 | `0022-image-reference-input.patch` | `e3b214e` + `0001`–`0021` | 模型中心生图接口传入参考图片字节；不支持图生图的供应商明确拒绝，避免静默丢图。带参考图透传和兼容端点拒绝测试，不修改 agent 核心。 | 未提交；不一定提上游 |
 
-| `0023-persona-settings-globals.patch` | `e3b214e` + `0001`–`0022` | 设置页新增「人格」一栏，集中 Persona 认领的配置组（模型请求超时、认知节奏等）；Persona 页不再出配置与提示词模板页签，只留运维与工具表（`~config` 路由仍可直达）。新增全局变量 `globals.trustedQQ`（白名单 QQ）放在该栏，经 `WorldContext.globals()` 每次现读给所有 World；它不授予权限，用途由插件决定（图像资料存图、Codex 委派）。改 WebUI、配置与扩展接口，不改 agent 核心；文案 11 种语言，带解析、热读、设置分区与页签测试。 | 未提交；不一定提上游 |
+| `0023-persona-settings-globals.patch` | `e3b214e` + `0001`–`0022` | 左栏 Core 组最后加「设置」，与底栏齿轮进同一页；设置页把 Persona 认领的配置组（模型请求超时、全局变量、认知节奏等）各列一栏，Persona 页的「配置」页签照旧。新增全局变量 `globals.trustedQQ`（白名单 QQ），经 `WorldContext.globals()` 每次现读给所有 World；它不授予权限，用途由插件决定（图像资料存图、Codex 委派）。改 WebUI、配置与扩展接口，不改 agent 核心；文案 11 种语言，带解析、热读、设置分栏与左栏测试。 | 未提交；不一定提上游 |
