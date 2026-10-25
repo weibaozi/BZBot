@@ -1,5 +1,5 @@
 diff --git a/src/web/client/features/config/view.ts b/src/web/client/features/config/view.ts
-index 90ea53d..8790731 100644
+index 90ea53d..72da23e 100644
 --- a/src/web/client/features/config/view.ts
 +++ b/src/web/client/features/config/view.ts
 @@ -308,6 +308,7 @@ export interface ConfigViewDeps {
@@ -10,11 +10,11 @@ index 90ea53d..8790731 100644
  }
  
  export interface ConfigView {
-@@ -390,12 +391,29 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
+@@ -390,12 +391,31 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
          ));
          return;
        }
-+      const tabs = ui.actions();
++      const tabs = ui.h('div', 'rowbar');
 +      const sections: Array<{ node: HTMLElement; button: HTMLButtonElement }> = [];
 +      if (deps.groupTabs && groups.length > 1) body.appendChild(tabs);
        for (const { group, values } of groups) {
@@ -25,10 +25,12 @@ index 90ea53d..8790731 100644
 +            for (const entry of sections) {
 +              entry.node.hidden = entry.node !== section;
 +              entry.button.setAttribute('aria-pressed', String(entry.node === section));
++              entry.button.classList.toggle('primary', entry.node === section);
 +            }
 +          } });
 +          section.hidden = sections.length > 0;
 +          button.setAttribute('aria-pressed', String(!section.hidden));
++          button.classList.toggle('primary', !section.hidden);
 +          sections.push({ node: section, button });
 +          tabs.appendChild(button);
 +        }
@@ -42,7 +44,7 @@ index 90ea53d..8790731 100644
          }
          for (const [path, prop] of Object.entries(group.schema.properties || {})) {
            const row = ui.h('div', 'trow');
-@@ -413,7 +431,7 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
+@@ -413,7 +433,7 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
            }
            row.appendChild(fieldWrap);
            row.appendChild(ui.h('span', 'tdesc', prop.description || ''));
