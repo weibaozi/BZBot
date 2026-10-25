@@ -29,3 +29,20 @@ it('declares the reminder setting in all supported languages', () => {
   expect(new Set(fields.map(field => field.title)).size).toBe(LANGUAGES.length);
   for (const field of fields) expect(field.description).toBeTruthy();
 });
+
+it.each([false, true])('samples admitted QQ group batches using the meme probability (forced mention: %s)', forcedMention => {
+ const group: EventEnvelope = { ...message, type: 'qq.group_context', meta: { forcedMention, conv: { kind: 'group', id: 424242 } } };
+ const cfg = { ...MEMES_DEFAULTS.memes, proactiveSearchPercent: 25 };
+ expect(proactiveHint(cfg, [group], 0.249)).toBe(PROACTIVE_HINT);
+ expect(proactiveHint(cfg, [group], 0.25)).toBeNull();
+ expect(proactiveHint({ ...cfg, proactiveSearchPercent: 0 }, [group], 0)).toBeNull();
+ expect(proactiveHint({ ...cfg, proactiveSearchPercent: 100 }, [group, group, message], 0.999)).toBe(PROACTIVE_HINT);
+ expect(proactiveHint({ ...cfg, enabled: false }, [group], 0)).toBeNull();
+ expect(proactiveHint({ ...cfg, maxMemes: 0 }, [group], 0)).toBeNull();
+});
+it('ignores archived group messages, trigger tickets, and another source claiming a QQ snapshot', () => {
+ const cfg = { ...MEMES_DEFAULTS.memes, proactiveSearchPercent: 100 };
+ expect(proactiveHint(cfg, [{ ...message, contextDelivery: 'archive-only' }], 0)).toBeNull();
+ expect(proactiveHint(cfg, [{ ...message, type: 'qq.group_trigger' }], 0)).toBeNull();
+ expect(proactiveHint(cfg, [{ ...message, type: 'qq.group_context', source: 'other' }], 0)).toBeNull();
+});

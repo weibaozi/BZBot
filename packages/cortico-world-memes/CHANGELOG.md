@@ -2,6 +2,8 @@
 
 ## 0.6.1
 
+- Include admitted QQ group context in the proactive meme reminder probability, for both random replies and forced mentions. Ignore archive-only messages; explicit requests remain independent of the random reminder.
+
 - Advance the WebUI asset version so cached 0.6.0 clients load the new settings.
 
 - Add a hot 0–100% proactive search reminder setting, default 50%. Sample once per delivered chat batch and append reminders through the Persona hook without rebuilding the prefix. Explicit image requests remain independent of probability. Requires patch 0011.
