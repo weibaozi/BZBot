@@ -29,3 +29,5 @@
 
 | `0011-world-delivery-hints.patch` | `e3b214e` + `0001`–`0010` | 新增按部署隔离的扩展提醒注册接口，在 corti-soulmate 的 Persona onDelivery 钩子中追加上下文尾部提醒，随扩展停止注销。Core、session 和前缀构造不变；带真实事件库、本地 OneBot 的隔离、注销和前缀稳定测试。 | 未提交；不一定提上游 |
 | `0012-world-mounted-list.patch` | `e3b214e` + `0001`–`0011` | `WorldContext` 新增可选的 `mountedWorlds()`：返回此刻挂载的 World id（含自己），每次调用现读，随激活与停用变化。技能 World（`packages/cortico-world-skills`）据此只列出所需 World 在场的技能。只改装配层的上下文构造与 `docs/worlds.md`，带装配层激活与停用的测试。 | 未提交；可考虑提上游 |
+
+| `0013-qq-config-tabs.patch` | `e3b214e` + `0001`–`0012` | QQ 分段回复拆成独立配置组；World 配置页多组时以分类按钮切换，保留所有表单和自动保存。配置路径、数值与发送逻辑不变，标题覆盖 11 种语言，带分组契约和分段发送测试。 | 未提交；可考虑提上游 |

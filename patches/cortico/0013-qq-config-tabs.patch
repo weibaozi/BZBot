@@ -1,0 +1,254 @@
+diff --git a/src/web/client/features/config/view.ts b/src/web/client/features/config/view.ts
+index 90ea53d..8790731 100644
+--- a/src/web/client/features/config/view.ts
++++ b/src/web/client/features/config/view.ts
+@@ -308,6 +308,7 @@ export interface ConfigViewDeps {
+   emptyText?: string;
+   /** 是否显示组的 owner 标签。 */
+   showOwner?: boolean;
++  groupTabs?: boolean;
+ }
+ 
+ export interface ConfigView {
+@@ -390,12 +391,29 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
+         ));
+         return;
+       }
++      const tabs = ui.actions();
++      const sections: Array<{ node: HTMLElement; button: HTMLButtonElement }> = [];
++      if (deps.groupTabs && groups.length > 1) body.appendChild(tabs);
+       for (const { group, values } of groups) {
++        const section = ui.h('div');
++        body.appendChild(section);
++        if (deps.groupTabs && groups.length > 1) {
++          const button = ui.button(group.schema.title || group.id, { onClick: () => {
++            for (const entry of sections) {
++              entry.node.hidden = entry.node !== section;
++              entry.button.setAttribute('aria-pressed', String(entry.node === section));
++            }
++          } });
++          section.hidden = sections.length > 0;
++          button.setAttribute('aria-pressed', String(!section.hidden));
++          sections.push({ node: section, button });
++          tabs.appendChild(button);
++        }
+         const sec = ui.h('div', 'tsection', group.schema.title || group.id);
+         if (showOwner) sec.appendChild(ui.h('span', 'ttag', OWNER_LABEL[group.owner] || group.owner));
+-        body.appendChild(sec);
++        section.appendChild(sec);
+         if (group.schema.description) {
+-          body.appendChild(ui.h('div', 'tsecdesc', group.schema.description));
++          section.appendChild(ui.h('div', 'tsecdesc', group.schema.description));
+         }
+         for (const [path, prop] of Object.entries(group.schema.properties || {})) {
+           const row = ui.h('div', 'trow');
+@@ -413,7 +431,7 @@ export function createConfigView(deps: ConfigViewDeps): ConfigView {
+           }
+           row.appendChild(fieldWrap);
+           row.appendChild(ui.h('span', 'tdesc', prop.description || ''));
+-          body.appendChild(row);
++          section.appendChild(row);
+           if (read) readers.push({ groupId: group.id, path, read });
+         }
+       }
+diff --git a/src/web/client/webui-pages/host.ts b/src/web/client/webui-pages/host.ts
+index 6f972bd..57da834 100644
+--- a/src/web/client/webui-pages/host.ts
++++ b/src/web/client/webui-pages/host.ts
+@@ -469,6 +469,7 @@ export class WebUiPageHost {
+       signal: lifecycle.signal,
+       filter: (group) => wanted.has(group.id),
+       showOwner: false,
++      groupTabs: true,
+       emptyText: S.configEmpty,
+     });
+     const sheet = ui.sheet({
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index 1f9bfad..f0dafd5 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -5,6 +5,8 @@
+ QQ 群聊与私聊接入。World 作为客户端连接一个 OneBot v11 协议端的正向 WebSocket,只处理
+ `worlds.qq.groups` / `worlds.qq.privates` 里启用的会话;发言经过起草-确认门。
+ 
++配置页按配置组切换，分段回复单独一栏，包含私聊和群聊规则；原有配置路径、值及热更新行为不变。
++
+ ## 协议端
+ 
+ 任何 OneBot v11 实现都可以接,推荐 [SnowLuma](https://github.com/SnowLuma/SnowLuma),
+diff --git a/src/worlds/qq/config.ts b/src/worlds/qq/config.ts
+index a6e83bd..0707b7b 100644
+--- a/src/worlds/qq/config.ts
++++ b/src/worlds/qq/config.ts
+@@ -69,7 +69,6 @@ export function qqConfigGroup(language: Language): ConfigGroup {
+           description: replyText(language).description,
+           'x-hot': true,
+         },
+-        ...segmentFields(language),
+         'worlds.qq.vision.enabled': {
+           type: 'boolean',
+           title: t.visionEnabledTitle,
+@@ -145,3 +144,8 @@ export interface QQConfigSection {
+   token: string;
+   vision: VisionConfig;
+ }
++
++export function qqSegmentConfigGroup(language: Language): ConfigGroup {
++  return { id: 'world:qq:segment', owner: 'world:qq', schema: { type: 'object',
++    title: segmentText(language).title, properties: segmentFields(language) } };
++}
+diff --git a/src/worlds/qq/segment-strings.ts b/src/worlds/qq/segment-strings.ts
+index 17af80e..43e8849 100644
+--- a/src/worlds/qq/segment-strings.ts
++++ b/src/worlds/qq/segment-strings.ts
+@@ -2,6 +2,7 @@ import type { Language } from '../../core/language.ts';
+ 
+ type Field = 'enabled' | 'maxChars' | 'mode' | 'regex' | 'words' | 'cleanup' | 'intervalMethod' | 'interval' | 'logBase';
+ interface SegmentText {
++  title: string;
+   kinds: { private: string; group: string };
+   fields: Record<Field, { title: string; description: string }>;
+   seconds: string;
+@@ -10,6 +11,7 @@ interface SegmentText {
+ 
+ const strings: Record<Language, SegmentText> = {
+   zh: {
++    title: '分段回复',
+     kinds: { private: '私聊', group: '群聊' }, seconds: '秒', chars: '字',
+     fields: {
+       enabled: { title: '分段发送', description: '确认发送时把正文切成几条依次发出。引用只跟第一条，图片跟最后一条。保存后对下一次发送生效。' },
+@@ -24,6 +26,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   'zh-Hant': {
++    title: '分段回覆',
+     kinds: { private: '私聊', group: '群聊' }, seconds: '秒', chars: '字',
+     fields: {
+       enabled: { title: '分段傳送', description: '確認傳送時把正文切成幾則依序送出。引用只跟第一則，圖片跟最後一則。儲存後對下一次傳送生效。' },
+@@ -38,6 +41,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   en: {
++    title: 'Segmented replies',
+     kinds: { private: 'Private chats', group: 'Groups' }, seconds: 's', chars: 'chars',
+     fields: {
+       enabled: { title: 'Split messages', description: 'On send, split the text into several messages sent one after another. A quote goes with the first, an image with the last. Changes apply to the next send.' },
+@@ -52,6 +56,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   ja: {
++    title: '分割返信',
+     kinds: { private: '個人チャット', group: 'グループ' }, seconds: '秒', chars: '文字',
+     fields: {
+       enabled: { title: '分割送信', description: '送信時に本文を複数のメッセージに分けて順に送ります。引用は最初、画像は最後に付きます。変更は次の送信から適用されます。' },
+@@ -66,6 +71,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   ko: {
++    title: '분할 답장',
+     kinds: { private: '개인 채팅', group: '그룹' }, seconds: '초', chars: '자',
+     fields: {
+       enabled: { title: '나눠 보내기', description: '보낼 때 본문을 여러 메시지로 나눠 차례로 보냅니다. 인용은 첫 메시지, 이미지는 마지막 메시지에 붙습니다. 변경 사항은 다음 전송부터 적용됩니다.' },
+@@ -80,6 +86,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   fr: {
++    title: 'Réponses fractionnées',
+     kinds: { private: 'Conversations privées', group: 'Groupes' }, seconds: 's', chars: 'car.',
+     fields: {
+       enabled: { title: 'Envoi en plusieurs messages', description: 'À l’envoi, découpe le texte en plusieurs messages envoyés l’un après l’autre. La citation accompagne le premier, l’image le dernier. Prend effet au prochain envoi.' },
+@@ -94,6 +101,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   de: {
++    title: 'Geteilte Antworten',
+     kinds: { private: 'Privatchats', group: 'Gruppen' }, seconds: 's', chars: 'Zeichen',
+     fields: {
+       enabled: { title: 'Nachrichten aufteilen', description: 'Beim Senden wird der Text in mehrere nacheinander gesendete Nachrichten geteilt. Ein Zitat gehört zur ersten, ein Bild zur letzten. Gilt ab dem nächsten Senden.' },
+@@ -108,6 +116,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   'es-419': {
++    title: 'Respuestas divididas',
+     kinds: { private: 'Chats privados', group: 'Grupos' }, seconds: 's', chars: 'car.',
+     fields: {
+       enabled: { title: 'Enviar en partes', description: 'Al enviar, divide el texto en varios mensajes que salen uno tras otro. La cita va con el primero y la imagen con el último. Se aplica al próximo envío.' },
+@@ -122,6 +131,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   'pt-BR': {
++    title: 'Respostas divididas',
+     kinds: { private: 'Conversas privadas', group: 'Grupos' }, seconds: 's', chars: 'caract.',
+     fields: {
+       enabled: { title: 'Enviar em partes', description: 'Ao enviar, divide o texto em várias mensagens enviadas uma após a outra. A citação vai com a primeira e a imagem com a última. Vale a partir do próximo envio.' },
+@@ -136,6 +146,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   it: {
++    title: 'Risposte suddivise',
+     kinds: { private: 'Chat private', group: 'Gruppi' }, seconds: 's', chars: 'car.',
+     fields: {
+       enabled: { title: 'Invio in più messaggi', description: 'All’invio divide il testo in più messaggi inviati uno dopo l’altro. La citazione va col primo, l’immagine con l’ultimo. Vale dal prossimo invio.' },
+@@ -150,6 +161,7 @@ const strings: Record<Language, SegmentText> = {
+     },
+   },
+   ru: {
++    title: 'Ответы по частям',
+     kinds: { private: 'Личные чаты', group: 'Группы' }, seconds: 'с', chars: 'симв.',
+     fields: {
+       enabled: { title: 'Отправка частями', description: 'При отправке текст делится на несколько сообщений, которые уходят одно за другим. Цитата идёт с первым, изображение — с последним. Действует со следующей отправки.' },
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 42c4d81..76e678f 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -50,7 +50,7 @@ import {
+ } from './normalize.ts';
+ import { VISION_DEFAULTS, type VisionConfig, type VisionService } from './vision.ts';
+ import { downloadImageBytes } from './image-download.ts';
+-import { qqConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
++import { qqConfigGroup, qqSegmentConfigGroup, QQ_DEFAULTS, type QQRosterEntry } from './config.ts';
+ import { text } from './strings.ts';
+ import { segmentDelayMs, splitText, type SegmentConfig, type SegmentRule } from './segment.ts';
+ 
+@@ -540,7 +540,7 @@ export class QQWorld implements World {
+           ],
+         },
+       ],
+-      config: [qqConfigGroup(language)],
++      config: [qqConfigGroup(language), qqSegmentConfigGroup(language)],
+       ...(this.vision ? { storage: [this.visionStorage(this.vision, language)] } : {}),
+     };
+   }
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+index 37fb1ea..9a63fb7 100644
+--- a/tests/integration/qq-segment.test.ts
++++ b/tests/integration/qq-segment.test.ts
+@@ -4,7 +4,7 @@ import { join } from 'node:path';
+ import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
+ import { nullLogger } from '../../src/core/util.ts';
+ import { LANGUAGES } from '../../src/core/language.ts';
+-import { qqConfigGroup } from '../../src/worlds/qq/config.ts';
++import { qqConfigGroup, qqSegmentConfigGroup } from '../../src/worlds/qq/config.ts';
+ import { MockOneBot } from '../helpers/mock-onebot.ts';
+ import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
+ 
+@@ -111,7 +111,9 @@ it.each(['private', 'group'] as const)('an image follows all text in a separate
+ 
+ it('declares both rule sets as hot settings in every supported UI language', () => {
+   for (const language of LANGUAGES) {
+-    const properties = qqConfigGroup(language).schema.properties!;
++    expect(Object.keys(qqConfigGroup(language).schema.properties).some(key => key.startsWith('worlds.qq.segment.'))).toBe(false);
++    expect(qqSegmentConfigGroup(language)).toMatchObject({ id: 'world:qq:segment', owner: 'world:qq' });
++    const properties = qqSegmentConfigGroup(language).schema.properties!;
+     for (const kind of ['private', 'group']) {
+       for (const name of ['enabled', 'maxChars', 'mode', 'regex', 'words', 'cleanup', 'intervalMethod', 'interval', 'logBase']) {
+         const field = properties[`worlds.qq.segment.${kind}.${name}`];
+@@ -120,7 +122,7 @@ it('declares both rule sets as hot settings in every supported UI language', ()
+       }
+     }
+   }
+-  const titles = LANGUAGES.map(language => qqConfigGroup(language).schema.properties!['worlds.qq.segment.private.enabled'].title);
++  const titles = LANGUAGES.map(language => qqSegmentConfigGroup(language).schema.properties!['worlds.qq.segment.private.enabled'].title);
+   expect(new Set(titles).size).toBe(LANGUAGES.length);
+ });
+ 
