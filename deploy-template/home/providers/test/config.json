@@ -1,0 +1,33 @@
+{
+  "kind": "openai-responses-compat",
+  "baseUrl": "https://api.deepseek.com/v1",
+  "options": {
+    "reasoningReplay": "plaintext"
+  },
+  "secret": "CORTICO_KEY_TEST",
+  "models": {
+    "deepseek-flash": {
+      "type": "chat",
+      "spec": {
+        "model": "deepseek-flash",
+        "thinking": true,
+        "reasoningEffort": "low",
+        "temperature": 0.65,
+        "maxTokens": 8192,
+        "contextWindow": 1000000
+      },
+      "pricing": [],
+      "multimodal": true
+    },
+    "deepseek-v4-pro": {
+      "type": "chat",
+      "spec": {
+        "thinking": true,
+        "model": "deepseek-v4-pro",
+        "maxTokens": 8192,
+        "contextWindow": 1000000
+      },
+      "enabled": false
+    }
+  }
+}

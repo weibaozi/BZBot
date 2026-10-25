@@ -1,6 +1,6 @@
 # Cortico 补丁
 
-`scripts/m0-setup.ps1` 在把 `vendor/cortico` 切到锁定的 commit 之后，按文件名顺序把这里的补丁整套打到干净的 checkout 上，并在 `vendor/cortico/.git/mybot-patches` 记下补丁名与哈希；记下的序列和现在一样就跳过。补丁有改动时，脚本要求先 `git -C vendor/cortico checkout .` 和 `git -C vendor/cortico clean -fd` 再重跑。规则见根目录 `AGENTS.md` 第 1 条。
+`scripts/setup.ps1` 在把 `vendor/cortico` 切到锁定的 commit 之后，按文件名顺序把这里的补丁整套打到干净的 checkout 上，并在 `vendor/cortico/.git/mybot-patches` 记下补丁名与哈希；记下的序列和现在一样就跳过。补丁有改动时，脚本要求先 `git -C vendor/cortico checkout .` 和 `git -C vendor/cortico clean -fd -e extensions` 再重跑（`-e extensions` 留住已装的扩展）。规则见根目录 `AGENTS.md` 第 1 条。
 
 | 补丁 | 基于 | 改了什么 | 上游状态 |
 |---|---|---|---|

@@ -1,0 +1,10 @@
+{
+  "kind": "openai-responses-compat",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "options": {},
+  "models": {
+    "bge-m3:latest": {
+      "type": "embedding"
+    }
+  }
+}

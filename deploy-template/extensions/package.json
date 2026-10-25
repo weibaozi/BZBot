@@ -1,0 +1,21 @@
+{
+  "private": true,
+  "dependencies": {
+    "cortico-bot-mybot": "link:../../../packages/cortico-bot-mybot",
+    "cortico-provider-chatgpt": "link:../../../packages/cortico-provider-chatgpt",
+    "cortico-provider-codex": "link:../../../packages/cortico-provider-codex",
+    "cortico-provider-coo": "0.3.1",
+    "cortico-world-agenda": "0.2.3",
+    "cortico-world-browser": "0.4.0",
+    "cortico-world-delegate": "link:../../../packages/cortico-world-delegate",
+    "cortico-world-images": "link:../../../packages/cortico-world-images",
+    "cortico-world-mcp": "link:../../../packages/cortico-world-mcp",
+    "cortico-world-memes": "link:../../../packages/cortico-world-memes",
+    "cortico-world-policy": "link:../../../packages/cortico-world-policy",
+    "cortico-world-proactive": "link:../../../packages/cortico-world-proactive",
+    "cortico-world-skills": "link:../../../packages/cortico-world-skills",
+    "cortico-world-visual": "link:../../../packages/cortico-world-visual",
+    "cortico-world-web-pro": "0.1.0"
+  },
+  "packageManager": "pnpm@11.28.6"
+}

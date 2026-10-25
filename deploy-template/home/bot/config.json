@@ -1,0 +1,171 @@
+{
+  "worlds": {
+    "qq": {
+      "groups": [],
+      "privates": [],
+      "vision": {
+        "enabled": false,
+        "model": "bytedance-seed/seed-2.0-mini",
+        "concurrency": 3,
+        "dedupPrecheckMs": 2500,
+        "maxImageBytes": 10485760,
+        "timeoutMs": 60000
+      },
+      "quoteReply": false,
+      "segment": {
+        "private": {
+          "enabled": true,
+          "maxChars": 150,
+          "mode": "regex",
+          "regex": ".*?[。？！~…]+|.+$",
+          "words": "。 ？ ！ ~ …",
+          "cleanup": "",
+          "intervalMethod": "random",
+          "interval": [
+            0.5,
+            1
+          ],
+          "logBase": 6
+        },
+        "group": {
+          "enabled": true,
+          "maxChars": 150,
+          "mode": "regex",
+          "regex": ".*?[。？！~…]+|.+$",
+          "words": "。 ？ ！ ~ …",
+          "cleanup": "",
+          "intervalMethod": "random",
+          "interval": [
+            0,
+            0.5
+          ],
+          "logBase": 6
+        }
+      },
+      "groupReply": {
+        "probability": 0,
+        "recentMessages": 5,
+        "forceMention": true
+      }
+    },
+    "memes": {
+      "enabled": true,
+      "memes": {
+        "embeddingProvider": "local-bge-m3",
+        "queryPrefix": "",
+        "enabled": true,
+        "pythonFile": "python",
+        "embeddingModel": "local-bge-m3/bge-m3:latest",
+        "topK": 5,
+        "minScore": 0.45,
+        "captionModel": "ChatGPT/gpt-6.1-sol",
+        "maxMemes": 1,
+        "timeoutSeconds": 30,
+        "proactiveSearchPercent": 100
+      }
+    },
+    "proactive": {
+      "active": true,
+      "targetQQ": "",
+      "intervalMinutes": [
+        30,
+        90
+      ],
+      "maxUnanswered": 2,
+      "dailyLimit": 6,
+      "quietEnabled": true,
+      "enabled": true,
+      "quietStart": "3:00",
+      "quietEnd": "11:00"
+    },
+    "delegate": {
+      "active": true,
+      "allowedQQ": "",
+      "timeoutSeconds": 1200,
+      "maxQueued": 3,
+      "enabled": true,
+      "writableDirs": "",
+      "allowNetwork": true,
+      "allowWebSearch": true,
+      "executableFile": "",
+      "workspaceDir": "",
+      "model": ""
+    },
+    "mcp": {
+      "enabled": false,
+      "browser": {
+        "headless": false,
+        "channel": "chrome",
+        "tools": "browser_navigate,browser_navigate_back,browser_snapshot,browser_find,browser_click,browser_hover,browser_press_key,browser_type,browser_take_screenshot,browser_wait_for,browser_tabs,browser_close",
+        "maxTextChars": 8000
+      }
+    },
+    "browser": {
+      "browser": "chrome",
+      "readyTimeoutMs": 30000,
+      "requestTimeoutMs": 30000,
+      "tabIdleMinutes": 15,
+      "ownBrowser": true,
+      "ownBrowserExe": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      "ownBrowserHome": "{{DEPLOYMENT_DIR}}/browser-home",
+      "ownBrowserPort": 9223,
+      "bringToFront": true,
+      "searchEngine": "bing",
+      "enabled": true,
+      "search": {
+        "order": "bing,deepseek,tavily,sogou,baidu",
+        "fallbackEnabled": false,
+        "deepseek": {
+          "enabled": false
+        },
+        "tavily": {
+          "enabled": false,
+          "searchDepth": "basic"
+        },
+        "bing": {
+          "enabled": true
+        },
+        "sogou": {
+          "enabled": false
+        },
+        "baidu": {
+          "enabled": false
+        }
+      }
+    },
+    "agenda": {
+      "enabled": true,
+      "entries": []
+    },
+    "skills": {
+      "enabled": true
+    },
+    "websearch": {
+      "enabled": false
+    },
+    "webpro": {
+      "enabled": true
+    },
+    "policy": {
+      "enabled": true
+    },
+    "images": {
+      "enabled": true,
+      "model": "Codex/gpt-image-2.5-flare",
+      "timeoutSeconds": 180
+    },
+    "visual": {
+      "enabled": true,
+      "savers": "",
+      "consoleCanSave": true
+    }
+  },
+  "activeProvider": "glm/glm-5.3-flash",
+  "batching": {
+    "quietGapMs": 800
+  },
+  "displayName": "包子",
+  "globals": {
+    "trustedQQ": ""
+  }
+}

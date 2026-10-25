@@ -1,0 +1,22 @@
+{
+  "models": {
+    "gpt-6.1-sol": {
+      "type": "chat",
+      "spec": {
+        "thinking": true,
+        "model": "gpt-6.1-sol",
+        "maxTokens": 8192,
+        "contextWindow": 250000,
+        "reasoningEffort": "low"
+      },
+      "pricing": [],
+      "multimodal": true
+    },
+    "gpt-image-2.5-flare": {
+      "type": "image",
+      "imageController": "Codex/gpt-6.1-sol"
+    }
+  },
+  "kind": "codex",
+  "baseUrl": "https://chatgpt.com/backend-api/codex"
+}

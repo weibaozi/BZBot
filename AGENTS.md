@@ -9,7 +9,7 @@ myBot 是基于 Cortico 的自用陪伴 bot。开工前先读：
 
 ## 规则
 
-1. **不直接改 Cortico 源码**。`vendor/cortico` 是普通 clone（不是 submodule，原因见 docs/architecture.md 第 8 节），由 `scripts/m0-setup.ps1` 锁定在某个 commit。我们的代码写在 `packages/` 下的扩展包里。
+1. **不直接改 Cortico 源码**。`vendor/cortico` 是普通 clone（不是 submodule，原因见 docs/architecture.md 第 8 节），由 `scripts/setup.ps1` 锁定在某个 commit。我们的代码写在 `packages/` 下的扩展包里。
    - **唯一的例外是补丁文件**：确实需要改 Cortico 时，改动存成 `patches/cortico/NNNN-<名字>.patch`（`git diff` 导出，含测试），并在 `patches/cortico/README.md` 里登记用途和上游状态。安装脚本在锁定 commit 后按文件名顺序打上补丁。
    - **能改什么**：Cortico 的管理代码可以改，包括 WebUI、配置读写、模型供应商管理、扩展接口（如 `WorldContext`）。**agent 运行的核心不改，或只做很少的改动**：`core/core.ts`、`core/loop.ts`、session、前缀、WakeBus 和 World 的运行逻辑。确实要动核心时，先说明原因并让用户确认。
    - 补丁遵守 Cortico 的 AGENTS.md，界面文案改齐 11 种语言，带测试。新逻辑尽量放进新文件，对已有文件只做小的接入改动，以减少升级时的冲突。补丁不要求一定能被上游接受；适合上游的再整理成 PR（提之前先给用户过目），上游合并后删掉补丁、更新锁定的 commit。

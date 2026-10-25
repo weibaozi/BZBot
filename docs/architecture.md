@@ -108,7 +108,7 @@ Cortico 只有三类扩展，每样东西放进哪一类按下表：
 myBot/
 ├── AGENTS.md                   给 Codex / Claude Code 的工作规则
 ├── docs/                       本目录
-├── vendor/cortico/             普通 clone（不进 myBot 的 git），由 scripts/m0-setup.ps1 锁定 commit
+├── vendor/cortico/             普通 clone（不进 myBot 的 git），由 scripts/setup.ps1 锁定 commit
 ├── patches/cortico/            需要 Cortico 改动时的补丁文件，安装脚本自动打上（见 AGENTS.md 第 1 条）
 ├── packages/
 │   ├── cortico-bot-mybot/

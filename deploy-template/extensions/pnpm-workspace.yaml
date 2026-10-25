@@ -1,0 +1,2 @@
+patchedDependencies:
+  cortico-world-agenda@0.2.3: patches/cortico-world-agenda@0.2.3.patch

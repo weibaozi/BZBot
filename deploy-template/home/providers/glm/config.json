@@ -1,0 +1,23 @@
+{
+  "models": {
+    "glm-5.3-flash": {
+      "type": "chat",
+      "spec": {
+        "thinking": true,
+        "model": "glm-5.3-flash",
+        "maxTokens": 8192,
+        "contextWindow": 250000,
+        "reasoningEffort": "low"
+      },
+      "multimodal": true,
+      "pricing": []
+    }
+  },
+  "kind": "openai-responses-compat",
+  "baseUrl": "https://open.bigmodel.cn/api/v1",
+  "secret": "CORTICO_KEY_GLM",
+  "options": {
+    "sendSyntheticReasoning": true,
+    "reasoningReplay": "plaintext"
+  }
+}

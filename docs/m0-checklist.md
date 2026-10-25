@@ -26,16 +26,16 @@
 把 `myBot` 文件夹复制到服务器上，在 PowerShell 里执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\m0-setup.ps1 -CorticoHome D:\mybot-data -BotName yuki
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -CorticoHome D:\mybot-data -BotName yuki
 ```
 
 脚本会：
 - 检查 Node 和 git。
-- 把 Cortico 拉到 `vendor\cortico`，切到锁定的 commit `e3b214e`，安装依赖。
-- 在 `D:\mybot-data` 下建一份部署 `yuki`，引用 corti-soulmate。
-- 装上模型供应商扩展 `cortico-provider-coo`。
+- 把 Cortico 拉到 `vendor\cortico`，切到锁定的 commit `e3b214e`，打上 `patches\cortico` 的全部补丁，安装依赖并构建管理页。
+- 准备 `packages\` 下的扩展包，按 `deploy-template\extensions` 装上全部扩展（含第三方扩展和它们的补丁）。
+- 照 `deploy-template\home` 建一份部署 `yuki` 和模型供应商配置：World 启用情况和设置与作者的 bot 一样，但没有白名单、QQ 号、日程和人格提示词。
 
-它不改任何系统设置。`-CorticoHome` 和 `-BotName` 可以换成你想要的路径和名字。
+它不改任何系统设置。`-CorticoHome`、`-BotName`、`-Port` 可以换成你想要的路径、名字和端口；不给 `-CorticoHome` 时用 myBot 旁边的 `myBot-data`。
 
 ## 5. 启动并配置模型
 ```powershell
