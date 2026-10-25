@@ -91,10 +91,10 @@ export default { panels: { layers: { async mount(ctx) {
       state = await ctx.invoke<PolicyState>('save', [state.revision, state.layers]); dirty = false;
       status.textContent = words.saved; render(); await ctx.refresh();
     } finally { disabled.dispose(); }
-  });
+  }, 'primary');
   const reload = button(words.reload, async () => {
     if (dirty && !await ctx.ui.confirm({ title: words.reloadConfirm })) return;
     state = await ctx.invoke('read'); dirty = false; status.textContent = ''; render();
-  });
+  }, 'primary');
   toolbar.append(add, save, reload); render();
 } } } } satisfies WebUiClientBundle;
