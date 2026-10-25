@@ -1,0 +1,525 @@
+diff --git a/docs/model-request-timeouts.md b/docs/model-request-timeouts.md
+new file mode 100644
+index 0000000..fd8bb3c
+--- /dev/null
++++ b/docs/model-request-timeouts.md
+@@ -0,0 +1,27 @@
++# Model request deadlines (`src/providers/request-timeouts.ts`)
++
++The Persona configuration page contains **Model request timeouts** for all chat providers,
++including the main session, dreams, model-hub chat calls and connectivity probes that use
++the provider registry. Settings belong to the deployment, not an individual provider.
++
++| Key | Default | Meaning |
++|---|---|---|
++| `modelTimeouts.totalSec` | 120 | Entire invocation, including authentication waits and provider retries |
++| `modelTimeouts.firstContentSec` | 60 | Wait for first text, reasoning or tool output |
++| `modelTimeouts.idleSec` | 60 | Wait between content events after output starts |
++
++Values are integer seconds from 1 to 3600. Changes apply to the next invocation; an
++in-flight call keeps its original deadlines. Metadata, heartbeat frames and empty deltas
++do not count as content. Continuous output cannot extend the total deadline.
++
++A deadline aborts the provider signal, drops late events and releases the caller even if
++an extension ignores cancellation. Such an extension may still consume upstream resources
++until it honors the signal or finishes. Timeout errors are local errors, not retryable
++upstream failures; the current invocation ends and later events can be processed normally.
++Only successfully completed generations proceed to tool execution. Existing memories and
++conversation history are preserved. An unfinished request may have incurred upstream usage
++that was not returned before cancellation.
++
++Embedding, reranking and audio endpoints retain the model hub's existing 60-second HTTP
++timeout. Login, token exchange and model discovery retain their own bounded timeouts.
++This configuration controls dialog generation, not tool execution or the whole multi-round turn.
+diff --git a/src/bot.ts b/src/bot.ts
+index 0426850..e5f2a35 100644
+--- a/src/bot.ts
++++ b/src/bot.ts
+@@ -1,4 +1,5 @@
+ /** 装配 Core、Persona、World 与 WebUI；具体 bot 的配置和行为由 BotDefinition 提供。 */
++import { requestTimeoutConfigGroup } from './providers/request-timeouts-config.ts';
+ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+ import { createHash } from 'node:crypto';
+ import { dirname, join } from 'node:path';
+@@ -937,6 +938,7 @@ export function createBot<C extends CoreConfig>(
+ 
+   const configGroups = (language: Language): ConfigGroup[] => [
+     coreConfigGroup(language),
++    requestTimeoutConfigGroup(language),
+     ...wellFormedGroups('persona', contribution.configGroups ?? []),
+     ...assembly.instances().flatMap((m) => wellFormedGroups(`worlds.${m.id}`, m.webUi?.(language)?.config ?? [])),
+   ];
+@@ -1053,7 +1055,7 @@ export function createBot<C extends CoreConfig>(
+           label: cfg.displayName || definition.id,
+           ...(definition.memoryName ? { memoryName: definition.memoryName } : {}),
+ 
+-          ...(contribution.configGroups?.length ? { configGroups: contribution.configGroups } : {}),
++          configGroups: [...(contribution.configGroups ?? []), requestTimeoutConfigGroup('zh')],
+         },
+         contribution.webUiPages
+           ? (language) => contribution.webUiPages!({ storage: webUiStorage(language), language })
+diff --git a/src/core/config.ts b/src/core/config.ts
+index 4702b9f..a2a8554 100644
+--- a/src/core/config.ts
++++ b/src/core/config.ts
+@@ -1,4 +1,5 @@
+ /** Core 默认配置与深合并工具。Persona 和 World 参数由各自声明，部署合并顺序见 src/deploy.ts。 */
++import { REQUEST_TIMEOUT_DEFAULTS } from '../providers/request-timeouts.ts';
+ import type { CoreConfig } from './types.ts';
+ import type { ConfigGroup } from './config-schema.ts';
+ import type { Language } from './language.ts';
+@@ -118,6 +119,7 @@ export function coreConfigGroup(language: Language): ConfigGroup {
+ export const CORE_CONFIG_GROUP: ConfigGroup = coreConfigGroup('zh');
+ 
+ export const CORE_DEFAULTS = {
++  modelTimeouts: REQUEST_TIMEOUT_DEFAULTS,
+   /** 用于 WebUI 标题和控制台消息的发送方名称。 */
+   displayName: 'Cortico Bot',
+   timezone: SYSTEM_TIMEZONE,
+diff --git a/src/core/core.ts b/src/core/core.ts
+index 69b83b1..250b719 100644
+--- a/src/core/core.ts
++++ b/src/core/core.ts
+@@ -1,4 +1,5 @@
+ /** Composition root for framework services and the `Persona`/`CoreApi` boundary. */
++import { REQUEST_TIMEOUT_DEFAULTS } from '../providers/request-timeouts.ts';
+ import { existsSync, mkdirSync } from 'node:fs';
+ import { join } from 'node:path';
+ import type {
+@@ -144,6 +145,7 @@ export class Core<C extends CoreConfig = CoreConfig> {
+         const bytes = this.resolveBlob(handle)?.bytes;
+         return bytes ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+       },
++      requestTimeouts: () => cfg.modelTimeouts ?? REQUEST_TIMEOUT_DEFAULTS,
+       keepThinking: () => cfg.context.keepPastThinking,
+       log: this.log.child('llm'),
+     });
+diff --git a/src/core/generation.ts b/src/core/generation.ts
+index d81c7d7..5cf96a1 100644
+--- a/src/core/generation.ts
++++ b/src/core/generation.ts
+@@ -64,6 +64,10 @@ export interface ProviderAttempt {
+   charges: Charge[];
+ }
+ export interface GenerateOptions {
++  /** Deployment deadlines supplied by the provider registry. */
++  requestTimeouts?: import('../providers/request-timeouts.ts').RequestTimeouts;
++  /** Transport progress observer; unlike onEvent, this does not enable streaming. */
++  onProgress?: (event: StreamEvent) => void;
+   signal?: AbortSignal;
+   onEvent?: (event: StreamEvent) => void;
+   role?: string;
+diff --git a/src/core/types.ts b/src/core/types.ts
+index e2a9447..8cc1da7 100644
+--- a/src/core/types.ts
++++ b/src/core/types.ts
+@@ -1197,6 +1197,7 @@ export interface LLMProviderEntry {
+  * 模型设置归 provider，session 轮数及上下文阶段预算归 Persona。
+  */
+ export interface CoreConfig {
++  modelTimeouts?: import('../providers/request-timeouts.ts').RequestTimeouts;
+   /** WebUI 和控制台使用的显示名。 */
+   displayName: string;
+   timezone: string;
+diff --git a/src/providers/base.ts b/src/providers/base.ts
+index c297d93..dcd186b 100644
+--- a/src/providers/base.ts
++++ b/src/providers/base.ts
+@@ -14,6 +14,7 @@ import type { Request } from '../protocol/open-responses/index.ts';
+ import type { ContextRecord } from '../protocol/open-responses/context.ts';
+ import type { GenerateOptions, Generation, GenerationError, ResponseClient } from '../core/generation.ts';
+ import type { EffortPreset } from './effort-presets.ts';
++import type { RequestTimeouts } from './request-timeouts.ts';
+ import type { ModelType } from './store.ts';
+ 
+ /** Providers expose standard Responses and own their native transport semantics. */
+@@ -42,6 +43,7 @@ export interface ProviderHost {
+ export type ProviderHostBase = Omit<ProviderHost, 'stateDir' | 'secret' | 'currentEntry' | 'resource'> & {
+   /** 同一部署根下共享的端点目录。 */
+   stateRoot: string;
++  requestTimeouts?(): RequestTimeouts;
+ };
+ 
+ /** One model the endpoint advertises. Optional fields are present only when the upstream states them. */
+diff --git a/src/providers/registry.ts b/src/providers/registry.ts
+index 047c829..4833dc0 100644
+--- a/src/providers/registry.ts
++++ b/src/providers/registry.ts
+@@ -7,6 +7,7 @@ import { quotePrices } from './pricebook.ts';
+ import { createHash } from 'node:crypto';
+ import { secretReader } from '../core/secrets.ts';
+ import type { ResponseClient } from '../core/generation.ts';
++import { withRequestTimeouts } from './request-timeouts.ts';
+ import { sourceOf } from './name.ts';
+ 
+ /** Modules are discovered from providers/<module>/index.ts. */
+@@ -126,8 +127,8 @@ export class ProviderRegistry {
+     const client: ResponseClient = {
+       bind: () => client,
+       respond: (request, options) =>
+-        instance.client.respond(request, {
+-          ...options,
++        withRequestTimeouts(timed => instance.client.respond(request, {
++          ...timed,
+           quote: (at) => quotePrices(entry, request, at, module.prices?.(entry, request, at) ?? []),
+           origin: {
+             instance: name,
+@@ -135,7 +136,7 @@ export class ProviderRegistry {
+             model: request.model ?? '',
+             compatibilityDomain: domain(),
+           },
+-        }),
++        }), options, this.host.requestTimeouts?.()),
+     };
+     return client;
+   }
+diff --git a/src/providers/request-timeouts-config.ts b/src/providers/request-timeouts-config.ts
+new file mode 100644
+index 0000000..dcd69e1
+--- /dev/null
++++ b/src/providers/request-timeouts-config.ts
+@@ -0,0 +1,23 @@
++import type { ConfigGroup } from '../core/config-schema.ts';
++import type { Language } from '../core/language.ts';
++
++const strings: Record<Language, readonly [string, string, string, string, string]> = {
++  zh: ['模型请求超时', '整轮时限', '首内容等待', '内容空闲时限', '单位：秒。适用于所有供应商的对话生成（主聊天、梦境与插件）。整轮包括认证等待与重试；首内容等待文字、推理或工具输出，心跳不算；空闲时限从最近一次内容计时。超时取消本次调用，不自动重试，下一次调用使用新设置。'],
++  'zh-Hant': ['模型請求逾時', '整輪時限', '首內容等待', '內容閒置時限', '單位：秒。適用於所有供應商的對話生成（主聊天、夢境與外掛）。整輪包含認證等待與重試；首內容等待文字、推理或工具輸出，心跳不算；閒置時限從最近一次內容計時。逾時取消本次呼叫，不自動重試，下次呼叫使用新設定。'],
++  en: ['Model request timeouts', 'Total deadline', 'First content wait', 'Content idle limit', 'Seconds. Applies to every provider’s chat generation (main chat, dreams and plugins). Total includes authentication waits and retries; first content means text, reasoning or tool output, not heartbeats; idle starts at the latest content. Timeout cancels the call without automatic retry. Changes apply to the next call.'],
++  ja: ['モデル要求のタイムアウト', '全体の制限時間', '最初の内容の待機時間', '内容の無通信時間', '単位：秒。全プロバイダーの会話生成（会話・夢・プラグイン）に適用。全体には認証待ちと再試行を含みます。内容は文字・推論・ツール出力を指し、ハートビートは除外します。無通信時間は最後の内容から計測。期限超過で呼び出しを取り消し、自動再試行しません。変更は次の呼び出しから適用。'],
++  ko: ['모델 요청 제한 시간', '전체 제한', '첫 내용 대기', '내용 유휴 제한', '단위: 초. 모든 공급자의 대화 생성(주 대화, 꿈, 플러그인)에 적용됩니다. 전체 시간에는 인증 대기와 재시도가 포함됩니다. 내용은 텍스트, 추론 또는 도구 출력이며 하트비트는 제외됩니다. 유휴 시간은 마지막 내용부터 계산합니다. 초과 시 자동 재시도 없이 취소합니다. 변경은 다음 호출부터 적용됩니다.'],
++  fr: ['Délais des requêtes du modèle', 'Délai total', 'Attente du premier contenu', 'Inactivité du contenu', 'En secondes, pour tous les fournisseurs de dialogue (conversation, rêves et extensions). Le total inclut authentification et tentatives. Le contenu désigne texte, raisonnement ou outils, sans signaux de maintien. L’inactivité commence au dernier contenu. À expiration, annulation sans nouvelle tentative automatique. Modifications au prochain appel.'],
++  de: ['Zeitlimits für Modellanfragen', 'Gesamtlimit', 'Warten auf ersten Inhalt', 'Inaktivitätslimit', 'Sekunden; für Dialoge aller Anbieter (Chat, Träume und Erweiterungen). Gesamtzeit umfasst Authentifizierung und Wiederholungen. Inhalt bedeutet Text, Denken oder Werkzeugausgabe, keine Keepalives. Inaktivität zählt ab dem letzten Inhalt. Bei Ablauf Abbruch ohne automatische Wiederholung. Änderungen gelten ab dem nächsten Aufruf.'],
++  'es-419': ['Límites de las solicitudes al modelo', 'Límite total', 'Espera del primer contenido', 'Inactividad del contenido', 'Segundos. Se aplica al diálogo de todos los proveedores (chat, sueños y extensiones). El total incluye autenticación y reintentos. El contenido es texto, razonamiento o herramientas, sin señales de conexión. La inactividad cuenta desde el último contenido. Al vencer se cancela sin reintento automático. Los cambios rigen desde la próxima llamada.'],
++  'pt-BR': ['Tempos limite das solicitações', 'Limite total', 'Espera do primeiro conteúdo', 'Inatividade do conteúdo', 'Segundos. Vale para diálogos de todos os provedores (chat, sonhos e extensões). O total inclui autenticação e tentativas. Conteúdo é texto, raciocínio ou ferramentas, sem sinais de conexão. A inatividade conta desde o último conteúdo. Ao expirar, cancela sem nova tentativa automática. Alterações valem na próxima chamada.'],
++  it: ['Timeout delle richieste al modello', 'Limite totale', 'Attesa del primo contenuto', 'Inattività del contenuto', 'Secondi. Vale per tutti i fornitori di dialogo (chat, sogni ed estensioni). Il totale include autenticazione e tentativi. Il contenuto è testo, ragionamento o strumenti, esclusi i segnali di connessione. L’inattività parte dall’ultimo contenuto. Alla scadenza annulla senza riprovare automaticamente. Modifiche dalla prossima chiamata.'],
++  ru: ['Тайм-ауты запросов модели', 'Общий лимит', 'Ожидание первого содержимого', 'Простой содержимого', 'Секунды. Для диалогов всех поставщиков (чат, сны и расширения). Общий лимит включает авторизацию и повторы. Содержимое — текст, рассуждение или инструменты, без сигналов поддержания связи. Простой отсчитывается от последнего содержимого. По истечении вызов отменяется без автоматического повтора. Изменения действуют со следующего вызова.'],
++};
++
++export function requestTimeoutConfigGroup(language: Language): ConfigGroup {
++  const [title, total, first, idle, description] = strings[language];
++  return { id: 'model-timeouts', owner: 'persona', schema: { type: 'object', title, description,
++    properties: Object.fromEntries([['totalSec', total], ['firstContentSec', first], ['idleSec', idle]].map(([key, label]) =>
++      [`modelTimeouts.${key}`, { type: 'integer' as const, title: label!, minimum: 1, maximum: 3600, multipleOf: 1, 'x-suffix': 's', 'x-hot': true }])) } };
++}
+diff --git a/src/providers/request-timeouts.ts b/src/providers/request-timeouts.ts
+new file mode 100644
+index 0000000..2eb1961
+--- /dev/null
++++ b/src/providers/request-timeouts.ts
+@@ -0,0 +1,51 @@
++import type { GenerateOptions, Generation } from '../core/generation.ts';
++import type { StreamEvent } from '../protocol/open-responses/index.ts';
++
++export interface RequestTimeouts { totalSec: number; firstContentSec: number; idleSec: number }
++export const REQUEST_TIMEOUT_DEFAULTS: RequestTimeouts = { totalSec: 120, firstContentSec: 60, idleSec: 60 };
++
++/** A deadline ends the invocation, including provider retries; it never resets on stream traffic. */
++export async function withRequestTimeouts(
++  run: (options: GenerateOptions) => Promise<Generation>, options: GenerateOptions = {},
++  settings: RequestTimeouts = REQUEST_TIMEOUT_DEFAULTS,
++): Promise<Generation> {
++  settings = { ...settings };
++  const controller = new AbortController();
++  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
++  signal.throwIfAborted();
++  let total: ReturnType<typeof setTimeout>;
++  let activity: ReturnType<typeof setTimeout>;
++  let expired: Error | undefined;
++  let rejectDeadline!: (error: unknown) => void;
++  const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
++  const stop = (kind: string, seconds: number) => {
++    expired = new Error(`Model request ${kind} timeout (${seconds}s)`);
++    expired.name = 'ModelRequestTimeoutError';
++    controller.abort(expired);
++  };
++  const onAbort = () => rejectDeadline(signal.reason);
++  signal.addEventListener('abort', onAbort, { once: true });
++  total = setTimeout(() => stop('total', settings.totalSec), settings.totalSec * 1000);
++  activity = setTimeout(() => stop('first content', settings.firstContentSec), settings.firstContentSec * 1000);
++  const progress = (event: StreamEvent) => {
++    if (signal.aborted) return;
++    const content = ('delta' in event && typeof event.delta === 'string' && event.delta.length > 0)
++      || event.type === 'response.output_item.added' || event.type === 'response.output_item.done';
++    if (content) {
++      clearTimeout(activity);
++      activity = setTimeout(() => stop('content idle', settings.idleSec), settings.idleSec * 1000);
++    }
++  };
++  try {
++    return await Promise.race([run({ ...options, signal, requestTimeouts: settings,
++      onProgress: event => { if (!signal.aborted) { progress(event); options.onProgress?.(event); } },
++      onEvent: options.onEvent ? event => { if (!signal.aborted) { progress(event); options.onEvent!(event); } } : undefined,
++    }), deadline]);
++  } catch (error) {
++    // A local deadline must not become a retryable upstream error in the agent loop.
++    throw expired ?? error;
++  } finally {
++    clearTimeout(total!); clearTimeout(activity!);
++    signal.removeEventListener('abort', onAbort);
++  }
++}
+diff --git a/src/providers/transport/response-http.ts b/src/providers/transport/response-http.ts
+index 97fb654..05f3f74 100644
+--- a/src/providers/transport/response-http.ts
++++ b/src/providers/transport/response-http.ts
+@@ -128,11 +128,16 @@ export async function generate(request: Request, options: GenerateOptions, origi
+     const controller = new AbortController();
+     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+     const streaming = Boolean(options.onEvent);
+-    let timer = setTimeout(() => controller.abort(new Error('Provider first response timeout')), streaming ? FIRST_RESPONSE_MS.streaming : FIRST_RESPONSE_MS.unary);
++    // The registry owns first-content and idle deadlines across attempts. Per-attempt
++    // transport guards must not expire earlier (e.g. idle < first-content wait).
++    const firstMs = options.requestTimeouts ? options.requestTimeouts.totalSec * 1000 : streaming ? FIRST_RESPONSE_MS.streaming : FIRST_RESPONSE_MS.unary;
++    const idleMs = options.requestTimeouts ? options.requestTimeouts.totalSec * 1000 : FRAME_IDLE_MS;
++    const contentMs = options.requestTimeouts ? options.requestTimeouts.totalSec * 1000 : CONTENT_IDLE_MS;
++    let timer = setTimeout(() => controller.abort(new Error('Provider first response timeout')), firstMs);
+     let contentTimer: ReturnType<typeof setTimeout> | null = null;
+     const touchContent = (): void => {
+       if (contentTimer) clearTimeout(contentTimer);
+-      contentTimer = setTimeout(() => controller.abort(new Error('Provider stream content idle timeout')), CONTENT_IDLE_MS);
++      contentTimer = setTimeout(() => controller.abort(new Error('Provider stream content idle timeout')), contentMs);
+     };
+     let committed = false;
+     let characters = 0;
+@@ -151,7 +156,7 @@ export async function generate(request: Request, options: GenerateOptions, origi
+       if (carriesContent(event)) touchContent();
+       if ('delta' in event && typeof event.delta === 'string') characters += event.delta.length;
+       if (irreversible(event)) committed = true;
+-      if (!options.signal?.aborted) options.onEvent?.(event);
++      if (!options.signal?.aborted) { options.onProgress?.(event); options.onEvent?.(event); }
+       if (characters > outputMax) {
+         runaway = true;
+         controller.abort();
+@@ -189,7 +194,7 @@ export async function generate(request: Request, options: GenerateOptions, origi
+         stream: for (;;) {
+           const chunk = await reader.read();
+           clearTimeout(timer);
+-          timer = setTimeout(() => controller.abort(new Error('Provider stream idle timeout')), FRAME_IDLE_MS);
++          timer = setTimeout(() => controller.abort(new Error('Provider stream idle timeout')), idleMs);
+           if (chunk.done) break;
+           for (const payload of frames.feed(decoder.decode(chunk.value, { stream: true }))) {
+             if (payload === '[DONE]') break stream;
+diff --git a/tests/integration/delivery-hints.test.ts b/tests/integration/delivery-hints.test.ts
+index 1ea1452..8cb5b32 100644
+--- a/tests/integration/delivery-hints.test.ts
++++ b/tests/integration/delivery-hints.test.ts
+@@ -9,13 +9,14 @@ it('isolates reminders, preserves the prefix and unregisters delivery callbacks'
+   const tmp = makeTmpDir(), mock = new MockOneBot({ port: 0, groupId: 424242 });
+   const port = await mock.start(), cfg = makeCfg(), llm = new FakeLLM();
+   cfg.worlds.qq = { ...cfg.worlds.qq, enabled: true, wsUrl: `ws://127.0.0.1:${port}`, groups: [{ id: 424242, enabled: true }], privates: [] };
++  cfg.worlds.qq.groupReply = { ...cfg.worlds.qq.groupReply, probability: 100 };
+   cfg.worlds.console.enabled = false; cfg.web.port = 0;
+   cfg.tick.dayIntervalMinutes = [999, 999]; cfg.tick.nightIntervalMinutes = null;
+   cfg.batching.quietGapMs = 20; cfg.batching.maxBatchAgeMs = 100;
+   const memoryDir = join(tmp.dir, 'memory'); mkdirSync(memoryDir, { recursive: true });
+   writeFileSync(join(memoryDir, 'CONSTITUTION.md'), 'Fixture persona');
+   const bot = assembleBot(makeLoaded({ config: cfg, rootDir: tmp.dir, memoryDir, dataDir: join(tmp.dir, 'data') }), { llm });
+-  const release = registerDeliveryHint(tmp.dir, 'fixture', events => events.some(e => e.type === 'qq.message') ? 'fixture reminder' : null);
++  const release = registerDeliveryHint(tmp.dir, 'fixture', events => events.some(e => e.type === 'qq.group_context') ? 'fixture reminder' : null);
+   const other = registerDeliveryHint(join(tmp.dir, 'other'), 'fixture', () => 'wrong deployment');
+   try {
+     expect(() => registerDeliveryHint(tmp.dir, 'fixture', () => null)).toThrow('already registered');
+diff --git a/tests/integration/qq-draft-confirm.test.ts b/tests/integration/qq-draft-confirm.test.ts
+index 28a28bc..d6d77a4 100644
+--- a/tests/integration/qq-draft-confirm.test.ts
++++ b/tests/integration/qq-draft-confirm.test.ts
+@@ -48,7 +48,8 @@ describe('QQ 草稿确认集成', () => {
+       privates: [],
+       token: '',
+     };
+-    cfg.worlds.console.enabled = false;
++    cfg.worlds.qq.groupReply = { ...cfg.worlds.qq.groupReply, probability: 100 };
++  cfg.worlds.console.enabled = false;
+     cfg.batching.quietGapMs = 40;
+     cfg.batching.maxBatchAgeMs = 400;
+     cfg.tick.dayIntervalMinutes = [999, 999];
+diff --git a/tests/integration/qq-voice-transcript.test.ts b/tests/integration/qq-voice-transcript.test.ts
+index e01de80..2c16ba2 100644
+--- a/tests/integration/qq-voice-transcript.test.ts
++++ b/tests/integration/qq-voice-transcript.test.ts
+@@ -40,7 +40,8 @@ describe('QQ 语音转写集成', () => {
+       privates: [],
+       token: '',
+     };
+-    cfg.worlds.console.enabled = false;
++    cfg.worlds.qq.groupReply = { ...cfg.worlds.qq.groupReply, probability: 100 };
++  cfg.worlds.console.enabled = false;
+     cfg.batching.quietGapMs = 40;
+     cfg.batching.maxBatchAgeMs = MAX_BATCH_AGE_MS;
+     cfg.tick.dayIntervalMinutes = [999, 999];
+diff --git a/tests/integration/system.test.ts b/tests/integration/system.test.ts
+index 201fe74..c2c3a2a 100644
+--- a/tests/integration/system.test.ts
++++ b/tests/integration/system.test.ts
+@@ -196,6 +196,14 @@ describe('全系统集成(控制台对话链路)', () => {
+     const pcOf = async () => (await cget()).groups.find((x) => x.group.id === PERSONA_CONFIG_GROUP.id)!;
+ 
+     const g = await cget();
++    expect(g.groups.find(x => x.group.id === 'model-timeouts')?.values).toMatchObject({
++      'modelTimeouts.totalSec': 120, 'modelTimeouts.firstContentSec': 60, 'modelTimeouts.idleSec': 60,
++    });
++    const deadlineSave = await cpost({ group: 'model-timeouts', values: { 'modelTimeouts.totalSec': 180 } });
++    expect(deadlineSave.status).toBe(200);
++    expect(bot.core.config.modelTimeouts?.totalSec).toBe(180);
++    expect(JSON.parse(readFileSync(join(tmp.dir, 'config.json'), 'utf8')).modelTimeouts.totalSec).toBe(180);
++    expect((await cpost({ group: 'model-timeouts', values: { 'modelTimeouts.totalSec': 0 } })).status).toBe(400);
+     // 未激活 World 的配置仍可编辑。
+     const endpointGroups = Object.entries(bot.core.config.providers).flatMap(([name, entry]) => [
+       { id: `llm.${entry.kind}.${name}.connection`, owner: `provider:${entry.kind}` },
+@@ -203,16 +211,16 @@ describe('全系统集成(控制台对话链路)', () => {
+     ]);
+ 
+     expect(g.groups.map((x) => x.group.id)).toEqual([
+-      'core', PERSONA_CONFIG_GROUP.id,
+-      'world:console', 'world:qq', 'world:bilibili',
++      'core', 'model-timeouts', PERSONA_CONFIG_GROUP.id,
++      'world:console', 'world:qq', 'world:qq:group-reply', 'world:qq:segment', 'world:bilibili',
+       'world:minecraft', 'world:minecraft:rhythm', 'world:minecraft:client', 'world:minecraft:player',
+       'world:websearch',
+       ...endpointGroups.map(group => group.id),
+     ]);
+     // id 标识具体实例；owner 标识与实例无关的架构角色。
+     expect(g.groups.map((x) => x.group.owner)).toEqual([
+-      'core', 'persona',
+-      'world:console', 'world:qq', 'world:bilibili',
++      'core', 'persona', 'persona',
++      'world:console', 'world:qq', 'world:qq', 'world:qq', 'world:bilibili',
+       'world:minecraft', 'world:minecraft', 'world:minecraft', 'world:minecraft',
+       'world:websearch',
+       ...endpointGroups.map(group => group.owner),
+diff --git a/tests/providers/request-timeouts.test.ts b/tests/providers/request-timeouts.test.ts
+new file mode 100644
+index 0000000..596c6c1
+--- /dev/null
++++ b/tests/providers/request-timeouts.test.ts
+@@ -0,0 +1,129 @@
++import { createServer } from 'node:http';
++import { describe, expect, it } from 'vitest';
++import { withRequestTimeouts, REQUEST_TIMEOUT_DEFAULTS } from '../../src/providers/request-timeouts.ts';
++import { requestTimeoutConfigGroup } from '../../src/providers/request-timeouts-config.ts';
++import { LANGUAGES } from '../../src/core/language.ts';
++import { createResponse, type StreamEvent } from '../../src/protocol/open-responses/index.ts';
++import type { Generation, GenerateOptions } from '../../src/core/generation.ts';
++import { ResponsesProvider } from '../../src/providers/openai-responses-compat/native.ts';
++import { ProviderRegistry } from '../../src/providers/registry.ts';
++import type { ProviderModule } from '../../src/providers/base.ts';
++import { nullLogger } from '../../src/core/util.ts';
++import { makeTmpDir } from '../core/helpers.ts';
++
++const request = { model: 'test-model', input: [] };
++const response = createResponse('test-response', request);
++const result: Generation = { response, attempts: [], origin: { instance: 'test', module: 'test', model: 'test-model', compatibilityDomain: 'test' } };
++const delta = { type: 'response.output_text.delta', delta: 'x' } as StreamEvent;
++const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
++
++describe('request deadlines', () => {
++  it('ends a stalled call, aborts its transport and drops late events even if a provider ignores cancellation', async () => {
++    let captured!: GenerateOptions; let delivered = 0;
++    await expect(withRequestTimeouts(options => { captured = options; return new Promise(() => {}); },
++      { onEvent: () => delivered++ }, { totalSec: 1, firstContentSec: .04, idleSec: 1 })).rejects.toThrow('first content');
++    expect(captured.signal?.aborted).toBe(true);
++    captured.onEvent?.(delta); expect(delivered).toBe(0);
++  });
++
++  it('times out idle content after the first output', async () => {
++    await expect(withRequestTimeouts(options => { options.onProgress?.(delta); return new Promise(() => {}); }, {},
++      { totalSec: 1, firstContentSec: 1, idleSec: .04 })).rejects.toThrow('content idle');
++  });
++
++  it('total deadline survives continuous content and is not extended by progress', async () => {
++    let timer: ReturnType<typeof setInterval> | undefined;
++    try {
++      await expect(withRequestTimeouts(options => {
++        options.onProgress?.(delta); timer = setInterval(() => options.onProgress?.(delta), 5);
++        return new Promise(() => {});
++      }, {}, { totalSec: .08, firstContentSec: 1, idleSec: .1 })).rejects.toThrow('total timeout');
++    } finally { clearInterval(timer); }
++  });
++
++  it('preserves success and upstream errors and removes timers on completion', async () => {
++    let captured!: GenerateOptions;
++    expect(await withRequestTimeouts(async options => { captured = options; return result; }, {},
++      { totalSec: .02, firstContentSec: .02, idleSec: .02 })).toBe(result);
++    await wait(40); expect(captured.signal?.aborted).toBe(false);
++    const failure = new Error('upstream failure');
++    await expect(withRequestTimeouts(async () => { throw failure; })).rejects.toBe(failure);
++  });
++
++  it('honors caller cancellation without waiting for the deadline', async () => {
++    const controller = new AbortController(); const reason = new Error('operator stopped');
++    const promise = withRequestTimeouts(() => new Promise(() => {}), { signal: controller.signal });
++    controller.abort(reason); await expect(promise).rejects.toBe(reason);
++    let called = false;
++    await expect(withRequestTimeouts(async () => { called = true; return result; }, { signal: controller.signal })).rejects.toBe(reason);
++    expect(called).toBe(false);
++  });
++
++  it('does not apply content-idle timeout before the first content arrives', async () => {
++    const server = createServer((_req, res) => {
++      res.writeHead(200, { 'content-type': 'text/event-stream' });
++      res.write(`data: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response })}\n\n`);
++      const timer = setTimeout(() => res.end(`data: ${JSON.stringify({ type: 'response.completed', sequence_number: 1,
++        response: { ...response, status: 'completed' } })}\n\n`), 100);
++      res.on('close', () => clearTimeout(timer));
++    });
++    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++    try {
++      const client = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
++      const generated = await withRequestTimeouts(options => client.respond(request, options), { onEvent: () => {} },
++        { totalSec: 2, firstContentSec: 1, idleSec: .02 });
++      expect(generated.response.status).toBe('completed'); expect(generated.attempts).toHaveLength(1);
++    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
++  });
++
++  it('bounds real HTTP streaming heartbeats and provider retry backoff within one invocation', async () => {
++    let requests = 0; let heartbeat = false;
++    const server = createServer((_req, res) => {
++      requests++;
++      if (!heartbeat) { res.writeHead(503); res.end('busy'); return; }
++      res.writeHead(200, { 'content-type': 'text/event-stream' });
++      res.write(`data: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response })}\n\n`);
++      const timer = setInterval(() => res.write(': heartbeat\n\n'), 5);
++      res.on('close', () => clearInterval(timer));
++    });
++    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++    const client = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
++    try {
++      await expect(withRequestTimeouts(options => client.respond(request, { ...options, onEvent: () => {} }), {},
++        { totalSec: .5, firstContentSec: 1, idleSec: 1 })).rejects.toThrow('total timeout');
++      expect(requests).toBe(1);
++      heartbeat = true;
++      await expect(withRequestTimeouts(options => client.respond(request, { ...options, onEvent: () => {} }), {},
++        { totalSec: 2, firstContentSec: .5, idleSec: 1 })).rejects.toThrow('first content');
++    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
++  });
++
++  it('uses live settings for each call across provider modules and preserves price/origin options', async () => {
++    const temp = makeTmpDir();
++    let settings = { ...REQUEST_TIMEOUT_DEFAULTS, firstContentSec: .03 };
++    const seen: GenerateOptions[] = [];
++    const modules: ProviderModule[] = ['one', 'two'].map(id => ({ id, title: id, reasoningTiers: [], serviceTiers: [],
++      create: () => ({ client: { respond: async (_request, options = {}) => {
++        seen.push(options); if (settings.firstContentSec < 1) return new Promise<Generation>(() => {}); return result;
++      } } }) }));
++    const registry = new ProviderRegistry(() => ({ a: { kind: 'one', baseUrl: 'http://localhost' }, b: { kind: 'two', baseUrl: 'http://localhost' } }),
++      { stateRoot: temp.dir, readBlob: () => null, keepThinking: () => true, log: nullLogger(), requestTimeouts: () => settings }, modules);
++    try {
++      const bound = registry.bind('a');
++      await expect(bound.respond(request)).rejects.toThrow('first content');
++      await expect(registry.bind('b').respond(request)).rejects.toThrow('first content');
++      settings = { ...REQUEST_TIMEOUT_DEFAULTS };
++      expect(await bound.respond(request)).toBe(result);
++      expect(seen.at(-1)?.origin?.instance).toBe('a'); expect(seen.at(-1)?.quote).toBeTypeOf('function');
++    } finally { temp.cleanup(); }
++  });
++
++  it('publishes bounded hot settings in the persona configuration in all UI languages', () => {
++    for (const language of LANGUAGES) {
++      const group = requestTimeoutConfigGroup(language);
++      expect(group.owner).toBe('persona');
++      expect(Object.keys(group.schema.properties)).toEqual(Object.keys(REQUEST_TIMEOUT_DEFAULTS).map(key => `modelTimeouts.${key}`));
++      for (const field of Object.values(group.schema.properties)) expect(field).toMatchObject({ minimum: 1, maximum: 3600, 'x-hot': true });
++    }
++  });
++});
