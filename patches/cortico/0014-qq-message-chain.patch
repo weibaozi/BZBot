@@ -22,7 +22,7 @@ index f0dafd5..0da22ab 100644
 +`qq_send` 和兼容草稿工具接受 `messages`：`plain` 使用 `text`，`mention_user` 使用数字 QQ 号字符串 `mention_user_id`，按数组顺序发送。不能同时传非空 `text`。仅群聊支持提及，不接受全体成员或昵称寻址。旧 `text` 保持纯文字，`image` 仍在所有文字之后单独发送。分段规则保留 @ 的位置；若自定义提取或清理正则破坏提及，退回整条文字发送，避免丢失或重复 @。
 diff --git a/src/worlds/qq/message-chain.ts b/src/worlds/qq/message-chain.ts
 new file mode 100644
-index 0000000..69b829f
+index 0000000..fc9130c
 --- /dev/null
 +++ b/src/worlds/qq/message-chain.ts
 @@ -0,0 +1,50 @@
@@ -32,7 +32,7 @@ index 0000000..69b829f
 +
 +/** Internal single-character tokens keep mentions indivisible during text splitting. */
 +export function parseMessageChain(messages: unknown, text: unknown): { text: string; mentions?: MentionTokens } {
-+  if (messages === undefined || messages === null) return { text: typeof text === 'string' ? text : '' };
++  if (messages === undefined || messages === null || (Array.isArray(messages) && messages.length === 0)) return { text: typeof text === 'string' ? text : '' };
 +  if (typeof text === 'string' && text.trim()) throw new Error('Use either messages or text, not both');
 +  if (!Array.isArray(messages) || !messages.length || messages.length > 256) throw new Error('messages must contain 1–256 components');
 +  const plain = messages.map(item => typeof item?.text === 'string' ? item.text : '').join('');
@@ -267,7 +267,7 @@ index 76e678f..41e8d3b 100644
                // 发出过任何一段就清掉草稿,免得重试时重复发出已发的段;一段都没发出则照常保留
                const result = await this.sendSegments(draft.target, outgoing, parts, rule);
 diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
-index 9a63fb7..e043719 100644
+index 9a63fb7..b8d5c35 100644
 --- a/tests/integration/qq-segment.test.ts
 +++ b/tests/integration/qq-segment.test.ts
 @@ -163,3 +163,43 @@ it('qq_send validates before sending and reports partial image failure without r
@@ -310,16 +310,16 @@ index 9a63fb7..e043719 100644
 +   {voice:'log:missing',messages:[{type:'mention_user',mention_user_id:'10001'}]},
 +  ]) expect(await tool('qq_send').handler({to:'group:424242',...args},ctx)).toContain('[bad input]');
 +  expect(mock.outbox).toHaveLength(0);
-+  await tool('qq_send').handler({to:'group:424242',text:'hello @10001'},ctx);
++  await tool('qq_send').handler({to:'group:424242',text:'hello @10001',messages:[],image:'',voice:'',reply_to:''},ctx);
 +  expect(mock.outbox[0].params.message).toEqual([{type:'text',data:{text:'hello @10001'}}]);
 + }finally{await done();}
 +},15000);
 diff --git a/tests/worlds/qq/message-chain.test.ts b/tests/worlds/qq/message-chain.test.ts
 new file mode 100644
-index 0000000..9b6a5ac
+index 0000000..b648e42
 --- /dev/null
 +++ b/tests/worlds/qq/message-chain.test.ts
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,20 @@
 +import { expect, it } from 'vitest';
 +import { parseMessageChain, splitChain, chainSegments, chainText } from '../../../src/worlds/qq/message-chain.ts';
 +import { SEGMENT_DEFAULTS } from '../../../src/worlds/qq/segment.ts';
@@ -333,4 +333,10 @@ index 0000000..9b6a5ac
 + expect(splitChain(chain.text,{...rule,cleanup:'[\ue000-\uf8ff]'},chain.mentions)).toEqual([chain.text]);
 + expect(splitChain(chain.text,{...rule,mode:'regex',regex:'[A-Za-z]+'},chain.mentions)).toEqual([chain.text]);
 + expect(splitChain(chain.text,{...rule,enabled:false},chain.mentions)).toEqual([chain.text]);
++});
++
++it('treats an empty chain as omitted while rejecting two nonempty bodies',()=>{
++ expect(parseMessageChain([], 'hello')).toEqual({text:'hello'});
++ expect(parseMessageChain([], undefined)).toEqual({text:''});
++ expect(()=>parseMessageChain([{type:'plain',text:'chain'}], 'text')).toThrow('either messages or text');
 +});
