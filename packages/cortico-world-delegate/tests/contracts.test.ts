@@ -1,12 +1,12 @@
 import { expect,it } from 'vitest';
 import { join } from 'node:path';
-import { existsSync,readFileSync } from 'node:fs';
+import { existsSync,readFileSync,mkdirSync } from 'node:fs';
 import { LANGUAGES } from 'cortico/core/language.ts';
 import type { EventEnvelope } from 'cortico/core/types.ts';
 import { makeTmpDir } from '../../../vendor/cortico/tests/core/helpers.ts';
 import { requestGrant } from '../server/authorization.ts';
 import { Jobs } from '../server/jobs.ts';
-import { CodexRunner,childEnvironment,taskWorkspace } from '../server/runner.ts';
+import { CodexRunner,childEnvironment,taskWorkspace,writableDirectories } from '../server/runner.ts';
 import { localModel } from './model.ts';
 import { strings } from '../strings.ts';
 import { delegateConfigGroup } from '../config.ts';
@@ -25,7 +25,7 @@ it('persists jobs in SQLite and marks unfinished work interrupted instead of rer
 });
 it('keeps bot secrets out of the child environment and localizes declared controls',()=>{
  process.env.CORTICO_DELEGATE_TEST_SECRET='fixture';try{expect(childEnvironment()).not.toHaveProperty('CORTICO_DELEGATE_TEST_SECRET');}finally{delete process.env.CORTICO_DELEGATE_TEST_SECRET;}
- for(const lang of LANGUAGES){for(const value of Object.values(strings(lang)))expect(value).toBeTruthy();expect(Object.keys(delegateConfigGroup(lang).schema.properties)).toHaveLength(7);}
+ for(const lang of LANGUAGES){for(const value of Object.values(strings(lang)))expect(value).toBeTruthy();expect(Object.keys(delegateConfigGroup(lang).schema.properties)).toHaveLength(10);}
 });
 it('runs the actual Codex CLI and writes an artifact through its sandboxed command tool',async()=>{
  const tmp=makeTmpDir(),model=await localModel(tmp.dir);model.artifact();
@@ -47,5 +47,35 @@ it('the Codex sandbox refuses a write outside the task workspace',async()=>{
  try{const workspace=taskWorkspace(join(tmp.dir,'tasks'),1);
  await new CodexRunner(model.connection).run({executable:'',workspace,task:'Test the configured sandbox boundary',model:'',timeoutSeconds:20,signal:new AbortController().signal});
  expect(model.toolOutputs.length).toBeGreaterThan(0);expect(existsSync(join(workspace,'..','outside.txt'))).toBe(false);
+ }finally{await model.close();tmp.cleanup();}
+},30000);
+
+it('validates and deduplicates configured writable directories',()=>{
+ const tmp=makeTmpDir();try{
+ expect(writableDirectories('')).toEqual([]);
+ expect(writableDirectories(tmp.dir+';'+tmp.dir)).toHaveLength(1);
+ expect(()=>writableDirectories('relative')).toThrow('absolute');
+ expect(()=>writableDirectories(join(tmp.dir,'missing'))).toThrow('absolute');
+ }finally{tmp.cleanup();}
+});
+it('allows writes in an explicitly configured additional directory',async()=>{
+ const tmp=makeTmpDir(),model=await localModel(tmp.dir),extra=join(tmp.dir,'extra allowed');mkdirSync(extra);
+ const target=join(extra,'result.txt');
+ model.artifact(process.platform==='win32'?"Set-Content -LiteralPath '"+target.replaceAll("'","''")+"' -Value 'allowed'":"printf allowed > '"+target+"'");
+ try{const workspace=taskWorkspace(join(tmp.dir,'tasks'),1);
+ const result=await new CodexRunner(model.connection).run({executable:'',workspace,writableDirs:extra,task:'Write to the allowed directory',model:'',timeoutSeconds:20,signal:new AbortController().signal});
+ expect(result.ok,result.text).toBe(true);expect(existsSync(target),JSON.stringify(model.toolOutputs)).toBe(true);
+ }finally{await model.close();tmp.cleanup();}
+},30000);
+
+it('exposes web search only when enabled in the real Codex model request',async()=>{
+ const tmp=makeTmpDir(),model=await localModel(tmp.dir);
+ try{const workspace=taskWorkspace(join(tmp.dir,'tasks'),1),runner=new CodexRunner(model.connection);
+ for(const enabled of [false,true]){
+ const result=await runner.run({executable:'',workspace,task:'Report ready without calling tools',model:'',allowWebSearch:enabled,allowNetwork:enabled,timeoutSeconds:20,signal:new AbortController().signal});
+ expect(result.ok,result.text).toBe(true);
+ const body=model.bodies.at(-1)!;
+ expect(body.tools?.some(tool=>tool.type.startsWith('web_search'))??false).toBe(enabled);
+ }
  }finally{await model.close();tmp.cleanup();}
 },30000);

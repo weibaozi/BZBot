@@ -8,7 +8,7 @@ import { registerDeliveryHint } from 'cortico/worlds/delivery-hints.ts';
 import { allowedUsers,delegateConfigGroup,type DelegateConfigSection } from './config.ts';
 import { requestGrant,type RequestGrant } from './server/authorization.ts';
 import { Jobs,type Job } from './server/jobs.ts';
-import { CodexRunner,codexExecutable,taskWorkspace } from './server/runner.ts';
+import { CodexRunner,codexExecutable,taskWorkspace,writableDirectories } from './server/runner.ts';
 import { strings } from './strings.ts';
 
 export const DELEGATE_TOOL_DECLS:Array<Omit<ToolDef,'handler'>>=[
@@ -62,6 +62,7 @@ export class DelegateWorld implements World {
       if(existing)return `这条用户消息已对应任务 #${existing.id}，状态 ${existing.status}，没有重复创建。`;
       if(this.jobs!.pending().filter(j=>j.status==='queued').length>=this.ctx.cfg.maxQueued)throw new Error('Delegation queue is full');
       codexExecutable(this.ctx.cfg.executableFile);
+      writableDirectories(this.ctx.cfg.writableDirs);
       if(this.ctx.cfg.workspaceDir&&!isAbsolute(this.ctx.cfg.workspaceDir))throw new Error('Workspace root must be an absolute path');
       const job=this.jobs!.add(grant.user,grant.cursor,args.task.trim());
       setImmediate(()=>this.kick());
@@ -86,6 +87,7 @@ export class DelegateWorld implements World {
       const root=this.ctx.cfg.workspaceDir||join(this.ctx.dataDir,'delegate','tasks');
       const workspace=taskWorkspace(root,job.id);this.jobs!.running(job.id,workspace);
       const result=await this.runner.run({executable:this.ctx.cfg.executableFile,workspace,task:job.task,model:this.ctx.cfg.model,
+        writableDirs:this.ctx.cfg.writableDirs,allowNetwork:this.ctx.cfg.allowNetwork,allowWebSearch:this.ctx.cfg.allowWebSearch,
         timeoutSeconds:this.ctx.cfg.timeoutSeconds,signal:abort.signal});
       this.jobs!.finish(job.id,abort.signal.aborted?this.running.reason:result.ok?'succeeded':'failed',result.text);
     }catch(error){this.jobs!.finish(job.id,abort.signal.aborted?this.running.reason:'failed',String(error).slice(0,2000));}

@@ -1,19 +1,23 @@
 import type { ConfigGroup, ConfigProperty } from 'cortico/core/config-schema.ts';
 import type { Language } from 'cortico/core/language.ts';
+import { permissionStrings } from './permission-strings.ts';
 import { strings } from './strings.ts';
 export interface DelegateConfigSection {
   enabled: boolean; active: boolean; allowedQQ: string; executableFile: string;
+  writableDirs: string; allowNetwork: boolean; allowWebSearch: boolean;
   workspaceDir: string; model: string; timeoutSeconds: number; maxQueued: number;
 }
 export const DELEGATE_DEFAULTS: DelegateConfigSection = {
-  enabled:false, active:true, allowedQQ:'', executableFile:'', workspaceDir:'', model:'', timeoutSeconds:1200, maxQueued:3,
+  writableDirs:'', allowNetwork:false, allowWebSearch:false, enabled:false, active:true, allowedQQ:'', executableFile:'', workspaceDir:'', model:'', timeoutSeconds:1200, maxQueued:3,
 };
 export function allowedUsers(cfg: DelegateConfigSection): Set<string> {
   return new Set(cfg.allowedQQ.split(/[\s,，;；]+/).filter(id=>/^[1-9]\d{4,15}$/.test(id)));
 }
 export function delegateConfigGroup(language:Language):ConfigGroup {
-  const t=strings(language);
+  const t=strings(language), permissions=permissionStrings[language];
   const fields:Record<string,ConfigProperty>={
+    writableDirs:{type:'string',title:permissions[0],description:permissions[3]},
+    allowNetwork:{type:'boolean',title:permissions[1]},allowWebSearch:{type:'boolean',title:permissions[2]},
     active:{type:'boolean',title:t.active},allowedQQ:{type:'string',title:t.whitelist},
     executableFile:{type:'string',title:t.executable,'x-path':{kind:'file'}},
     workspaceDir:{type:'string',title:t.workspace,'x-path':{kind:'directory'}},model:{type:'string',title:t.model},

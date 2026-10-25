@@ -8,6 +8,7 @@ export async function localModel(dir:string){
   let command:string|undefined;
   let count=0;
   const toolOutputs:unknown[]=[];
+  const bodies:Array<{tools?:Array<{type:string}>,input?:unknown,instructions?:string}>=[];
   const waiting:Array<()=>void>=[];
   const respond=(res:ServerResponse,output:unknown[])=>{
     res.writeHead(200,{'Content-Type':'text/event-stream'});
@@ -20,7 +21,7 @@ export async function localModel(dir:string){
     let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
       if(req.url!=='/v1/responses'){res.writeHead(404);res.end();return;}
       count++;
-      const body=JSON.parse(raw);
+      const body=JSON.parse(raw);bodies.push(body);
       toolOutputs.push(...(body.input??[]).filter((item:{type:string})=>item.type==='function_call_output'));
       const send=()=>{
         if(res.destroyed)return;
@@ -36,6 +37,6 @@ export async function localModel(dir:string){
   const address=server.address();if(!address||typeof address==='string')throw new Error('No model port');
   const homeDir=join(dir,'codex-home');mkdirSync(homeDir,{recursive:true});
   const connection:ModelConnection={baseUrl:`http://127.0.0.1:${address.port}/v1`,homeDir,model:'fixture'};
-  return {connection,toolOutputs,get requests(){return count;},hold(){hold=true;},release(){hold=false;while(waiting.length)waiting.shift()!();},artifact(cmd?:string){artifact=true;command=cmd;},
+  return {connection,toolOutputs,bodies,get requests(){return count;},hold(){hold=true;},release(){hold=false;while(waiting.length)waiting.shift()!();},artifact(cmd?:string){artifact=true;command=cmd;},
     async close(){server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}};
 }
