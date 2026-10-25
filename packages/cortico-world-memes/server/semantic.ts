@@ -53,7 +53,7 @@ export class MemeSemantic {
       throw new Error('keywords must contain 1–8 non-empty strings of at most 200 characters');
     const query = [...new Set((input.keywords as string[]).map(word => word.trim()))].join(' ');
     const found = await this.search.search(query, cfg.topK, signal);
-    const candidates = found.candidates.filter(c => c.score >= cfg.minScore);
+    const candidates = found.candidates.filter(c => c.score >= cfg.minScore).map(c => ({ ...c, image: `meme:${c.id}` }));
     return { reason: candidates.length ? 'candidates' : 'no_candidates', sent: false, query, ...found, candidates };
   }
 }

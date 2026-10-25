@@ -1,0 +1,275 @@
+diff --git a/src/worlds/console/definition.ts b/src/worlds/console/definition.ts
+index 01d0e0d..881ebe8 100644
+--- a/src/worlds/console/definition.ts
++++ b/src/worlds/console/definition.ts
+@@ -1,3 +1,4 @@
++import { resolveSourceImage } from '../image-sources.ts';
+ import { describeTools, type WorldDefinition } from '../../world.ts';
+ import { CONSOLE_DEFAULTS, type ConsoleConfigSection } from './config.ts';
+ import { CONSOLE_TOOL_DECLS, ConsoleWorld } from './world.ts';
+@@ -8,6 +9,7 @@ export const CONSOLE: WorldDefinition<ConsoleConfigSection> = {
+   defaults: () => ({ ...CONSOLE_DEFAULTS }),
+   create: (ctx) => new ConsoleWorld({
+     timezone: ctx.timezone,
++    resolveImage: ref => resolveSourceImage(ctx.botDir, ref),
+     botName: ctx.botName,
+     cfg: ctx.cfg,
+   }),
+diff --git a/src/worlds/console/world.ts b/src/worlds/console/world.ts
+index ccf1448..9a87b61 100644
+--- a/src/worlds/console/world.ts
++++ b/src/worlds/console/world.ts
+@@ -1,3 +1,4 @@
++import type { SourceImage } from '../image-sources.ts';
+ /**
+  * 控制台对话 World ConsoleWorld。
+  *
+@@ -99,7 +100,7 @@ export const CONSOLE_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
+       type: 'object',
+       properties: {
+         text: { type: 'string', description: 'Text to send.' },
+-        image: { type: 'string', description: 'Optional log: or mem: image attachment handle. Text or image must be provided.' },
++        image: { type: 'string', description: 'Optional log: or mem: image handle, or an exact image reference returned by a search tool. Text or image must be provided.' },
+       },
+       required: [],
+     },
+@@ -156,6 +157,7 @@ interface ChatClient {
+ 
+ 
+ interface ConsoleWorldOptions {
++  resolveImage?: (reference: string) => Promise<SourceImage | null>;
+   /** 渲染[HH:MM]用的时区,默认本机时区 */
+   timezone?: string;
+   /** 出方消息的 from 字段;取部署配置的 displayName */
+@@ -229,7 +231,9 @@ export class ConsoleWorld implements World {
+   private operatorMessages = 0;
+   private operatorMessagesAtLastSend = 0;
+ 
++  private readonly resolveImage?: (reference: string) => Promise<SourceImage | null>;
+   constructor(opts: ConsoleWorldOptions = {}) {
++    this.resolveImage = opts.resolveImage;
+     this.timezone = opts.timezone ?? SYSTEM_TIMEZONE;
+     this.botName = opts.botName ?? 'bot';
+     this.cfg = opts.cfg ?? { ...CONSOLE_DEFAULTS };
+@@ -353,8 +357,11 @@ export class ConsoleWorld implements World {
+           const image = typeof args.image === 'string' ? args.image.trim() : '';
+           if (!text && !image) return '[send failed] text or image must not be empty';
+           if (!this.host) return '[send failed] console module not started';
++          let resolvedImage: SourceImage | null = null;
+           if (image) {
+-            const blob = this.host.blob(image);
++            try { resolvedImage = this.host.blob(image) ?? await this.resolveImage?.(image) ?? null; }
++            catch (error) { return `[send failed] ${error instanceof Error ? error.message : String(error)}`; }
++            const blob = resolvedImage;
+             if (!blob || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(blob.mime)) {
+               return '[send failed] image must resolve to a PNG, JPEG, GIF or WebP attachment';
+             }
+@@ -367,7 +374,7 @@ export class ConsoleWorld implements World {
+               source: this.id,
+               text: MODEL_TEXT.selfLine(shortTime(this.timezone), text),
+               meta: { from: this.botName, body: text },
+-              ...(image ? { blobs: [{ handle: image, fallbackText: '[image attachment]' }] } : {}),
++              ...(resolvedImage ? { blobs: [{ ...resolvedImage, fallbackText: '[image attachment]' }] } : {}),
+             },
+             { deliver: false },
+           );
+diff --git a/src/worlds/image-sources.ts b/src/worlds/image-sources.ts
+new file mode 100644
+index 0000000..552e3a9
+--- /dev/null
++++ b/src/worlds/image-sources.ts
+@@ -0,0 +1,25 @@
++/** Deployment-scoped image references supplied by extensions; no network or path interpretation. */
++import { resolve } from 'node:path';
++export interface SourceImage { bytes: Uint8Array; mime: string }
++export type ImageSource = (id: string) => Promise<SourceImage>;
++const sources = new Map<string, Map<string, ImageSource>>();
++function key(dir: string) { const path = resolve(dir); return process.platform === 'win32' ? path.toLowerCase() : path; }
++/** Register while the owning World is started; dispose on stop. log:/mem: remain host-owned. */
++export function registerImageSource(dir: string, scheme: string, source: ImageSource): () => void {
++  if (!/^[a-z][a-z0-9-]*$/.test(scheme) || ['log', 'mem'].includes(scheme)) throw new Error('Invalid image source scheme');
++  const scope = key(dir);
++  let entries = sources.get(scope);
++  if (!entries) sources.set(scope, entries = new Map());
++  if (entries.has(scheme)) throw new Error(`Image source already registered: ${scheme}`);
++  entries.set(scheme, source);
++  return () => {
++    if (entries.get(scheme) === source) entries.delete(scheme);
++    if (!entries.size && sources.get(scope) === entries) sources.delete(scope);
++  };
++}
++export async function resolveSourceImage(dir: string, reference: string): Promise<SourceImage | null> {
++  const colon = reference.indexOf(':');
++  if (colon < 1) return null;
++  const source = sources.get(key(dir))?.get(reference.slice(0, colon));
++  return source ? source(reference.slice(colon + 1)) : null;
++}
+diff --git a/src/worlds/qq/definition.ts b/src/worlds/qq/definition.ts
+index d6868a9..79cf9e9 100644
+--- a/src/worlds/qq/definition.ts
++++ b/src/worlds/qq/definition.ts
+@@ -1,3 +1,4 @@
++import { resolveSourceImage } from '../image-sources.ts';
+ import { describeTools, type WorldDefinition } from '../../world.ts';
+ import { type QQConfigSection, QQ_DEFAULTS, QQ_SECRETS } from './config.ts';
+ import { QQWorld, QQ_TOOL_DECLS, enabledRosterIds } from './world.ts';
+@@ -36,6 +37,7 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+       },
+       {
+         vision,
++        resolveImage: ref => resolveSourceImage(ctx.botDir, ref),
+         quoteReply: () => cfg.quoteReply,
+         segment: () => cfg.segment,
+         imageCapture: cfg.vision,
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 24fbc2a..9699ccf 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -1,3 +1,4 @@
++import type { SourceImage } from '../image-sources.ts';
+ /**
+  * QQ World。
+  *
+@@ -121,6 +122,7 @@ interface QQGatePanelDeps {
+ }
+ 
+ interface QQWorldDeps {
++  resolveImage?: (reference: string) => Promise<SourceImage | null>;
+   quoteReply?: () => boolean;
+   /** 按会话类型的分段发送规则,每次发送时读;没给就整条发。 */
+   segment?: () => SegmentConfig;
+@@ -138,6 +140,7 @@ interface OutgoingParts {
+   replyMessageId?: number | string;
+   imageRef?: string;
+   imageBytes?: Uint8Array;
++  imageMime?: string;
+   voiceRef?: string;
+   voiceBytes?: Uint8Array;
+ }
+@@ -188,7 +191,7 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+         type: 'string',
+         description:
+           'Optional. An image to send, given by handle: a log: handle from a [blob ...] line you saw, '
+-          + 'or a mem: handle of one kept in your workspace.',
++          + 'or a mem: handle of one kept in your workspace, or an exact image reference returned by a search tool (for example meme:<candidate-id>). Copy the reference unchanged; no get_meme call is needed for such references.',
+       },
+       voice: {
+         type: 'string',
+@@ -259,6 +262,7 @@ export class QQWorld implements World {
+   readonly id = 'qq';
+ 
+   private readonly cfg: QQWorldConfig;
++  private readonly resolveImage?: (reference: string) => Promise<SourceImage | null>;
+   private readonly imageCapture: QQImageCaptureOptions;
+   private readonly timezone: string;
+   private host?: WorldHost;
+@@ -310,6 +314,7 @@ export class QQWorld implements World {
+     this.cfg = cfg;
+     this.timezone = cfg.timezone ?? SYSTEM_TIMEZONE;
+     this.vision = deps?.vision;
++    this.resolveImage = deps?.resolveImage;
+     this.imageCapture = deps?.imageCapture ?? VISION_DEFAULTS;
+     this.gate = deps?.gate;
+     this.quoteReply = deps?.quoteReply ?? (() => QQ_DEFAULTS.quoteReply);
+@@ -1518,7 +1523,7 @@ export class QQWorld implements World {
+     const ids: string[] = [];
+     let omittedQuote = false;
+     const messages: OutgoingParts[] = parts.map((text, index) => ({ text, ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}) }));
+-    if (opts.imageBytes) messages.push({ text: '', imageRef: opts.imageRef, imageBytes: opts.imageBytes });
++    if (opts.imageBytes) messages.push({ text: '', imageRef: opts.imageRef, imageBytes: opts.imageBytes, imageMime: opts.imageMime });
+     for (const [index, message] of messages.entries()) {
+       try {
+         if (index > 0 && index < parts.length && rule) await this.sleep(segmentDelayMs(message.text, rule));
+@@ -1573,7 +1578,9 @@ export class QQWorld implements World {
+     const voiceMark = opts.voiceRef ? `[语音: ${opts.voiceRef}]` : '';
+     const selfBody = [opts.text, imgMark, voiceMark].filter(Boolean).join(' ');
+     const selfBlob = opts.imageRef
+-      ? { handle: opts.imageRef, fallbackText: '你发出的图片' }
++      ? (opts.imageMime && opts.imageBytes
++        ? { bytes: opts.imageBytes, mime: opts.imageMime, fallbackText: '你发出的图片' }
++        : { handle: opts.imageRef, fallbackText: '你发出的图片' })
+       : opts.voiceRef
+         ? { handle: opts.voiceRef, fallbackText: '你发出的语音' }
+         : null;
+@@ -1663,9 +1670,13 @@ export class QQWorld implements World {
+ 
+         // 图片:按句柄确认取得到,并按字节内容弹出已有的识别描述作为preview(省一次qq_view_image)
+         let imageRef: string | undefined;
++        let resolvedImage: SourceImage | null = null;
+         let previewLine = '';
+         if (imageArg) {
+-          const got = host.blob(imageArg);
++          let got: SourceImage | null;
++          try { got = host.blob(imageArg) ?? await this.resolveImage?.(imageArg) ?? null; }
++          catch (error) { return `[send failed] ${error instanceof Error ? error.message : String(error)}`; }
++          resolvedImage = got;
+           if (!got) return `[send failed] no blob for ${imageArg}; use a log: handle from a [blob ...] line or a mem: handle from your workspace`;
+           if (!got.mime.startsWith('image/')) return `[send failed] ${imageArg} is ${got.mime}, not an image`;
+           imageRef = imageArg;
+@@ -1688,7 +1699,7 @@ export class QQWorld implements World {
+         if (direct) {
+           try {
+             const outgoing = { text, replyMessageId: rep.mid, imageRef, voiceRef,
+-              imageBytes: imageRef ? host.blob(imageRef)!.bytes : undefined,
++              imageBytes: resolvedImage?.bytes, imageMime: resolvedImage?.mime,
+               voiceBytes: voiceRef ? host.blob(voiceRef)!.bytes : undefined };
+             const { parts, rule } = this.segmentsFor(target, text);
+             if ((rule && parts.length > 1) || (text.trim() && outgoing.imageBytes))
+@@ -1746,10 +1757,11 @@ export class QQWorld implements World {
+           try {
+             // 发送时才把字节取回来(草稿只记引用;取消的草稿一次都不读)
+             let imageBytes: Uint8Array | undefined;
++            let imageMime: string | undefined;
+             if (draft.imageRef) {
+-              const got = host.blob(draft.imageRef);
++              const got = host.blob(draft.imageRef) ?? await this.resolveImage?.(draft.imageRef);
+               if (!got) return `[send failed] blob ${draft.imageRef} is gone (draft kept)`;
+-              imageBytes = got.bytes;
++              imageBytes = got.bytes; imageMime = got.mime;
+             }
+             let voiceBytes: Uint8Array | undefined;
+             if (draft.voiceRef) {
+@@ -1757,7 +1769,7 @@ export class QQWorld implements World {
+               if (!got) return `[send failed] blob ${draft.voiceRef} is gone (draft kept)`;
+               voiceBytes = got.bytes;
+             }
+-            const outgoing = { text: draft.text, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, voiceRef: draft.voiceRef, voiceBytes };
++            const outgoing = { text: draft.text, replyMessageId: draft.replyMessageId, imageRef: draft.imageRef, imageBytes, imageMime, voiceRef: draft.voiceRef, voiceBytes };
+             const { parts, rule } = this.segmentsFor(draft.target, draft.text);
+             if ((rule && parts.length > 1) || (draft.text.trim() && imageBytes)) {
+               // 发出过任何一段就清掉草稿,免得重试时重复发出已发的段;一段都没发出则照常保留
+diff --git a/tests/worlds/image-sources.test.ts b/tests/worlds/image-sources.test.ts
+new file mode 100644
+index 0000000..bef3a30
+--- /dev/null
++++ b/tests/worlds/image-sources.test.ts
+@@ -0,0 +1,29 @@
++import { expect, it } from 'vitest';
++import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { registerImageSource, resolveSourceImage } from '../../src/worlds/image-sources.ts';
++
++it('isolates image sources by deployment, preserves exact ids, and unregisters on disposal', async () => {
++  const dir = await mkdtemp(join(tmpdir(), 'image-source-'));
++  const bytes = Buffer.from('89504e470d0a1a0a', 'hex');
++  const file = join(dir, 'image.png'); await writeFile(file, bytes);
++  const source = async (id: string) => {
++    if (id !== 'pack:image') throw new Error('Unknown image');
++    return { bytes: await readFile(file), mime: 'image/png' };
++  };
++  const dispose = registerImageSource(dir, 'fixture', source);
++  try {
++    expect(await resolveSourceImage(dir, 'fixture:pack:image')).toEqual({ bytes, mime: 'image/png' });
++    expect(await resolveSourceImage(join(dir, 'other'), 'fixture:pack:image')).toBeNull();
++    await expect(resolveSourceImage(dir, 'fixture:pack:image.extra')).rejects.toThrow('Unknown image');
++    expect(() => registerImageSource(dir, 'fixture', source)).toThrow('already registered');
++    expect(() => registerImageSource(dir, 'log', source)).toThrow('Invalid');
++    dispose();
++    expect(await resolveSourceImage(dir, 'fixture:pack:image')).toBeNull();
++    const next = registerImageSource(dir, 'fixture', source);
++    dispose();
++    expect(await resolveSourceImage(dir, 'fixture:pack:image')).not.toBeNull();
++    next();
++  } finally { dispose(); await rm(dir, { recursive: true, force: true }); }
++});

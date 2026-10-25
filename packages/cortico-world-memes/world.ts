@@ -1,3 +1,4 @@
+import { registerImageSource } from 'cortico/worlds/image-sources.ts';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,7 @@ import { MemeSearch } from './server/search.ts';
 import { MemeSemantic, type Progress } from './server/semantic.ts';
 
 export const MEMES_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
-  { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags and ids; sends nothing. Call at most once per reply.',
+  { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags, ids and an image reference; sends nothing. Pass the selected image reference unchanged to qq_send or console_send together with your reply text; they resolve the image automatically, so do not call get_meme first. Call at most once per reply.',
     parameters: { type: 'object', properties: { keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'A few short phrases describing your intended expression, attitude, action and recipient relationship. Reuse the current conversation; do not copy its history or persona.' } }, required: ['keywords'] } },
   { name: 'get_meme', tags: ['read'], description: 'Read a selected meme image. Use its blob handle with the current channel\'s image-capable sending tool. This tool does not send.',
     parameters: { type: 'object', properties: { id: { type: 'string', description: 'Exact candidate id returned by search.' } }, required: ['id'] } },
@@ -21,6 +22,7 @@ export class MemesWorld implements World {
   readonly search: MemeSearch;
   readonly semantic: MemeSemantic;
   private host?: WorldHost;
+  private releaseImageSource?: () => void;
   private abort = new AbortController();
   private pending?: Promise<void>;
   private jobAbort?: AbortController;
@@ -33,8 +35,19 @@ export class MemesWorld implements World {
       (usage, options) => this.host?.reportUsage(usage, options));
   }
   envPromptVars() { return this.ctx.cfg.memes.enabled ? {} : null; }
-  async start(host: WorldHost) { this.host = host; this.abort = new AbortController(); }
-  async stop() { this.abort.abort(); await this.pending; this.host = undefined; }
+  async start(host: WorldHost) {
+    this.host = host; this.abort = new AbortController();
+    this.releaseImageSource = registerImageSource(this.ctx.botDir, 'meme', async id => {
+      if (!this.ctx.cfg.memes.enabled || this.ctx.cfg.memes.maxMemes === 0) throw new Error('Meme feature is disabled');
+      const pack = (await this.library.packs()).find(p => id.startsWith(p.id + ':'));
+      if (!pack || pack.enabled === false) throw new Error('Meme pack is unavailable or disabled');
+      const { entry, bytes } = await this.library.image(id);
+      if (!entry.searchable) throw new Error('Meme is not available for conversation use');
+      this.abort.signal.throwIfAborted();
+      return { bytes, mime: entry.mime };
+    });
+  }
+  async stop() { this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
   tools(): ToolDef[] {
     return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');

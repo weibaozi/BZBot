@@ -1,5 +1,10 @@
 # `definition.ts` / `MemesWorld`
 
+## Unreleased
+
+- Search results include deployment-scoped `meme:<id>` image references. QQ and console resolve selected images while sending, eliminating the separate `get_meme` model round.
+- Reject disabled, deleted or unavailable images before sending text; keep image bytes in the outgoing event history. Update the saved prompt to pass candidate `image` directly to the channel tool. Requires Cortico patch 0010.
+
 ## 0.6.0
 
 - Use ModelHub references for embeddings and image-capable caption models; both selections default to empty. Framework `x-options` supplies the filtered choices.
