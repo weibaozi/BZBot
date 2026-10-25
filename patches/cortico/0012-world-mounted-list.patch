@@ -1,0 +1,75 @@
+diff --git a/docs/worlds.md b/docs/worlds.md
+index 5498b76..a96031b 100644
+--- a/docs/worlds.md
++++ b/docs/worlds.md
+@@ -76,7 +76,8 @@ World 应通过事件报告服务器起停、存档切换、连接变化等状
+ `enabled` 应为 false)、`preflight?`、`configOptions?`、`create(ctx)`、`describe?`(自描述,见下)。
+ `WorldContext` 向 `create` 提供:`cfg`(共享配置对象)、`timezone`、`botName`、`botDir` /
+ `packageDir` / `dataDir` / `repoRoot`、`secret()` / `storeSecret()`、`persist()`(写回
+-`worlds.<id>`)、`restart()`、`models`(部署根 `providers/` 的模型中心,见 [providers.md](providers.md)「模型中心」)。界面语言不在其中:它是每个请求的属性,`webUi(language)` 与
++`worlds.<id>`)、`restart()`、`models`(部署根 `providers/` 的模型中心,见 [providers.md](providers.md)「模型中心」)、
++`mountedWorlds?()`(此刻挂载的 World id,含自己;每次调用现读,随激活与停用变化,可据此只提供别的 World 在场时才有意义的内容)。界面语言不在其中:它是每个请求的属性,`webUi(language)` 与
+ `configOptions(kind, language)` 每次传入(见 [webui.md](webui.md))。WebUI 里的 World 名取
+ `webUi(language).label`,没有时取定义的 `label`,两者都按请求现读。
+ 
+diff --git a/src/world.ts b/src/world.ts
+index 93c87c7..e36ad43 100644
+--- a/src/world.ts
++++ b/src/world.ts
+@@ -48,6 +48,8 @@ export interface WorldContext<S extends WorldSection = WorldSection> {
+   restart(): Promise<void>;
+   /** 部署根 `providers/` 下的模型，按模型引用调用；配置项用 `x-options: models:<类型>` 让操作者选。 */
+   readonly models: ModelHub;
++  /** 此刻挂载的 World id(含本 World);每次调用现读,激活与停用随即反映。宿主未接入时缺省。 */
++  mountedWorlds?(): readonly string[];
+ }
+ 
+ export interface WorldDefinition<S extends WorldSection = WorldSection> {
+@@ -475,6 +477,7 @@ export class WorldAssembly {
+       persist: (patch) => this.persist(def.id, patch as Record<string, unknown>),
+       restart: () => this.sync(def.id),
+       models: this.models,
++      mountedWorlds: () => this.mounted.map((mod) => mod.id),
+     };
+   }
+ }
+diff --git a/tests/world-mounted.test.ts b/tests/world-mounted.test.ts
+new file mode 100644
+index 0000000..68305e2
+--- /dev/null
++++ b/tests/world-mounted.test.ts
+@@ -0,0 +1,34 @@
++/** A World can see which Worlds are mounted right now, its own included. */
++import { afterEach, expect, it } from 'vitest';
++import { loadDeployment } from '../src/deploy.ts';
++import { NO_MODELS } from '../src/providers/model-hub.ts';
++import { WorldAssembly, type WorldContext, type WorldDefinition } from '../src/world.ts';
++import { makeCfg, makeTmpDir } from './core/helpers.ts';
++
++const cleanups: Array<() => void> = [];
++afterEach(() => cleanups.splice(0).forEach(fn => fn()));
++
++it('lists the mounted Worlds at each call, following activation', async () => {
++  const temp = makeTmpDir(); cleanups.push(temp.cleanup);
++  const contexts = new Map<string, WorldContext>();
++  const def = (id: string, enabled: boolean): WorldDefinition => ({
++    id, label: id, defaults: () => ({ enabled }),
++    create: (ctx) => { contexts.set(id, ctx); return { id, tools: () => [], envPromptVars: () => null, start: async () => {}, stop: async () => {} }; },
++  });
++  const loaded = loadDeployment({ defaults: () => makeCfg() }, temp.dir, temp.dir);
++  const assembly = new WorldAssembly(loaded, [def('skills', true), def('browser', false)], [], NO_MODELS);
++  // Stands in for core, which keeps the shared mounted list as it mounts and unmounts.
++  assembly.bind({
++    mount: async (mod) => { assembly.mounted.push(mod); },
++    unmount: async (id) => { assembly.mounted.splice(assembly.mounted.findIndex((mod) => mod.id === id), 1); },
++  });
++  const skills = contexts.get('skills')!;
++  expect(skills.mountedWorlds?.()).toEqual(['skills']);
++  const browser = contexts.get('browser')!;
++  browser.cfg.enabled = true;
++  await browser.restart();
++  expect(skills.mountedWorlds?.()).toEqual(['skills', 'browser']);
++  browser.cfg.enabled = false;
++  await browser.restart();
++  expect(skills.mountedWorlds?.()).toEqual(['skills']);
++});

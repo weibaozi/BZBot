@@ -28,3 +28,4 @@
 不要把含全部补丁的 `vendor/cortico` diff 写回 `0001`，否则后序补丁会重复应用。
 
 | `0011-world-delivery-hints.patch` | `e3b214e` + `0001`–`0010` | 新增按部署隔离的扩展提醒注册接口，在 corti-soulmate 的 Persona onDelivery 钩子中追加上下文尾部提醒，随扩展停止注销。Core、session 和前缀构造不变；带真实事件库、本地 OneBot 的隔离、注销和前缀稳定测试。 | 未提交；不一定提上游 |
+| `0012-world-mounted-list.patch` | `e3b214e` + `0001`–`0011` | `WorldContext` 新增可选的 `mountedWorlds()`：返回此刻挂载的 World id（含自己），每次调用现读，随激活与停用变化。技能 World（`packages/cortico-world-skills`）据此只列出所需 World 在场的技能。只改装配层的上下文构造与 `docs/worlds.md`，带装配层激活与停用的测试。 | 未提交；可考虑提上游 |

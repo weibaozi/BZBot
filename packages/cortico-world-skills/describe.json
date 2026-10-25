@@ -1,0 +1,36 @@
+{
+  "tools": [
+    {
+      "name": "read_skill",
+      "description": "Read one of your skills: how to do a kind of task, step by step. Read it before doing that task, then follow it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "The skill id shown in your skill list."
+          }
+        },
+        "required": [
+          "skill"
+        ]
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "读一个技能：做某类事的步骤。",
+        "en": "Reads one skill: the steps for a kind of task."
+      }
+    }
+  ],
+  "events": [],
+  "prompts": [
+    {
+      "key": "worlds.skills.environment",
+      "title": "技能 · 环境提示词",
+      "role": "envPrompt",
+      "content": "你会这些技能（做某类事的方法）：\n{{skills.list | (暂时没有可用的技能)}}\n\n做其中某类事之前，先用 read_skill 读一遍那个技能，再照着做。技能由管理员维护，你不能改；用的时候有新心得或踩了坑，记进你自己的 note/playbook/，下次和技能一起参考。\n"
+    }
+  ]
+}

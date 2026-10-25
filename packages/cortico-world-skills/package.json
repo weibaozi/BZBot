@@ -1,0 +1,14 @@
+{
+  "name": "cortico-world-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "description": "Shared skills: how-to guides every deployment can read, listed only when the Worlds they need are mounted",
+  "keywords": ["cortico-world"],
+  "cortico": { "kind": "world", "api": 6, "displayName": "技能", "describe": "describe.json" },
+  "scripts": {
+    "test": "node ../../vendor/cortico/node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../vendor/cortico/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
+  }
+}
