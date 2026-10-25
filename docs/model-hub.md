@@ -20,6 +20,8 @@
 
 模型类型：
 
+「获取模型列表」支持 OpenAI 的 `data/id` 和 Codex 风格的 `models/slug` 返回，保留名称、上下文窗口和图片输入能力。列表接口与对话接口分别验证；能获取列表不代表有调用额度，能对话也不保证服务提供标准列表格式。
+
 支持文本主控的生图供应商，在每个生图模型的「模型设置」中选择同供应商已启用的对话模型。引用保存在该生图模型的 `imageController`；每次生图重新校验，停用或删除后需重新选择。未选择时使用供应商默认行为。
 
 生图使用 `image` 类型，与对话模型分开显示。插件通过 `ctx.models.generateImage(ref, prompt, { signal, timeoutSeconds })` 获取图片字节；配置选项使用 `x-options: models:image`。供应商可实现 `ProviderInstance.generateImage`（例如 Codex OAuth），其余支持生图的协议走 `/images/generations`。接口不自动发送图片，也不把图片模型设为主对话模型。

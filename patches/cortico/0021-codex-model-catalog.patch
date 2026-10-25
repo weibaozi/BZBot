@@ -1,0 +1,114 @@
+diff --git a/src/providers/openai-responses-compat/catalog.ts b/src/providers/openai-responses-compat/catalog.ts
+new file mode 100644
+index 0000000..b6aabc8
+--- /dev/null
++++ b/src/providers/openai-responses-compat/catalog.ts
+@@ -0,0 +1,28 @@
++import type { ListedModel } from '../base.ts';
++
++/** OpenAI data/id and Codex models/slug catalogs describe models without changing connection settings. */
++export function parseModelCatalog(value: unknown): ListedModel[] {
++  const body = value as { data?: unknown; models?: unknown } | null;
++  const codex = !Array.isArray(body?.data) && Array.isArray(body?.models);
++  const rows = codex ? body!.models : body?.data;
++  if (!Array.isArray(rows)) throw new Error('GET /models returned neither a data array nor a models array');
++  const models: ListedModel[] = [];
++  for (const item of rows) {
++    if (!item || typeof item !== 'object') continue;
++    const row = item as Record<string, unknown>;
++    const id = codex ? row.slug : row.id;
++    if (typeof id !== 'string' || !id.trim()) continue;
++    if (codex && (row.supported_in_api === false || row.visibility === 'hidden')) continue;
++    const model: ListedModel = { id };
++    const name = codex ? row.display_name : row.name;
++    if (typeof name === 'string' && name.trim()) model.displayName = name;
++    const window = codex ? row.context_window : row.context_length;
++    if (typeof window === 'number' && Number.isInteger(window) && window > 0) model.contextWindow = window;
++    const output = (row.top_provider as { max_completion_tokens?: unknown } | null)?.max_completion_tokens;
++    if (typeof output === 'number' && Number.isInteger(output) && output > 0) model.maxOutputTokens = output;
++    const modalities = codex ? row.input_modalities : (row.architecture as { input_modalities?: unknown } | null)?.input_modalities;
++    if (Array.isArray(modalities)) model.inputImages = modalities.includes('image');
++    models.push(model);
++  }
++  return models.sort((a, b) => a.id.localeCompare(b.id));
++}
+diff --git a/src/providers/openai-responses-compat/native.ts b/src/providers/openai-responses-compat/native.ts
+index 8104c91..69edd12 100644
+--- a/src/providers/openai-responses-compat/native.ts
++++ b/src/providers/openai-responses-compat/native.ts
+@@ -1,6 +1,7 @@
+ /** Native Responses over any OpenAI-compatible endpoint: bearer key, stateless replay, no vendor branching. */
+ import type { Logger } from '../../core/types.ts';
+ import type { ListedModel } from '../base.ts';
++import { parseModelCatalog } from './catalog.ts';
+ import { nullLogger } from '../../core/util.ts';
+ import { OpenAIHttpClient } from '../transport/chat.ts';
+ import { ResponseProtocolError } from '../../protocol/open-responses/stream.ts';
+@@ -132,25 +133,9 @@ export class ModelCatalog {
+     const { baseUrl, headers } = this.endpoint();
+     const res = await this.fetchImpl(`${baseUrl.replace(/\/+$/, '')}/models`, { headers, signal: AbortSignal.timeout(15_000) });
+     if (!res.ok) throw new Error(`GET /models ${res.status}: ${(await res.text()).slice(0, 300)}`);
+-    const json = (await res.json()) as {
+-      data?: Array<{ id?: unknown; name?: unknown; context_length?: unknown; top_provider?: { max_completion_tokens?: unknown } | null; architecture?: { input_modalities?: unknown } | null }>;
+-    };
+-    if (!Array.isArray(json.data)) throw new Error('GET /models returned no data array');
+-    const models: ListedModel[] = [];
+-    for (const row of json.data) {
+-      if (typeof row.id !== 'string') continue;
+-      const model: ListedModel = { id: row.id };
+-      if (typeof row.name === 'string' && row.name.trim()) model.displayName = row.name;
+-      const window = typeof row.context_length === 'number' && Number.isInteger(row.context_length) && row.context_length > 0 ? row.context_length : undefined;
+-      if (window) model.contextWindow = window;
+-      const maxOutput = row.top_provider?.max_completion_tokens;
+-      if (typeof maxOutput === 'number' && Number.isInteger(maxOutput) && maxOutput > 0) model.maxOutputTokens = maxOutput;
+-      const modalities = row.architecture?.input_modalities;
+-      if (Array.isArray(modalities)) model.inputImages = modalities.includes('image');
+-      this.known.set(row.id, window);
+-      models.push(model);
+-    }
+-    return models.sort((a, b) => a.id.localeCompare(b.id));
++    const models = parseModelCatalog(await res.json());
++    for (const model of models) this.known.set(model.id, model.contextWindow);
++    return models;
+   }
+ 
+   contextWindow(model: string): number | undefined {
+diff --git a/tests/providers/catalog.test.ts b/tests/providers/catalog.test.ts
+new file mode 100644
+index 0000000..c8afe41
+--- /dev/null
++++ b/tests/providers/catalog.test.ts
+@@ -0,0 +1,33 @@
++import { expect, it } from 'vitest';
++import { createServer } from 'node:http';
++import { ModelCatalog } from '../../src/providers/openai-responses-compat/native.ts';
++import { parseModelCatalog } from '../../src/providers/openai-responses-compat/catalog.ts';
++
++it('reads a Codex catalog through real HTTP and preserves model metadata', async () => {
++  const seen: string[] = [];
++  const server = createServer((req, res) => {
++    seen.push(`${req.method} ${req.url} ${req.headers.authorization}`);
++    res.setHeader('Content-Type', 'application/json');
++    res.end(JSON.stringify({ models: [
++      { slug: 'vision', display_name: 'Vision model', context_window: 1048576, input_modalities: ['text', 'image'], supported_in_api: true, visibility: 'list' },
++      { slug: 'text', context_window: 204800, input_modalities: ['text'] },
++      { slug: 'hidden', visibility: 'hidden' }, { slug: 'unavailable', supported_in_api: false }, null,
++    ] }));
++  });
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++  try {
++    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/`;
++    const catalog = new ModelCatalog(() => ({ baseUrl, headers: { Authorization: 'Bearer fixture' } }));
++    expect(await catalog.list()).toEqual([
++      { id: 'text', contextWindow: 204800, inputImages: false },
++      { id: 'vision', displayName: 'Vision model', contextWindow: 1048576, inputImages: true },
++    ]);
++    expect(catalog.contextWindow('vision')).toBe(1048576);
++    expect(seen).toEqual(['GET /v1/models Bearer fixture']);
++  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
++});
++it('keeps OpenAI metadata and rejects error envelopes', () => {
++  expect(parseModelCatalog({ data: [{ id: 'a', name: 'A', context_length: 4096, top_provider: { max_completion_tokens: 512 }, architecture: { input_modalities: ['image'] } }] })).toEqual([{ id: 'a', displayName: 'A', contextWindow: 4096, maxOutputTokens: 512, inputImages: true }]);
++  expect(() => parseModelCatalog({ error: 'denied' })).toThrow('array');
++  expect(parseModelCatalog({ models: [] })).toEqual([]);
++});
