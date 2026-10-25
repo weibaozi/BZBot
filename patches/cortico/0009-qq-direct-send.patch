@@ -1,0 +1,193 @@
+diff --git a/src/worlds/qq/ENV_PROMPT.md b/src/worlds/qq/ENV_PROMPT.md
+index cbbafeb..c41f5cf 100644
+--- a/src/worlds/qq/ENV_PROMPT.md
++++ b/src/worlds/qq/ENV_PROMPT.md
+@@ -3,3 +3,5 @@
+ 下面是你正在参与的会话:
+ {{qq.conversations | (还没有配置任何监听的群或私聊。)}}
+ {{qq.identity | (与QQ的连接尚未建立,群名和你的账号信息暂时未知。)}}
++
++发送回复使用 qq_send：一次提交文字和图片，直接发送，不需要 qq_confirm。插件先发文字，再单独发图。qq_draft / qq_confirm 是旧版兼容工具，新回复不要使用。
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index 09ebece..1f9bfad 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -34,13 +34,13 @@ OneBot v11 标准动作:`get_login_info`、`get_group_info`、`get_group_member_
+ 
+ ## 分段发送
+ 
+-`qq_confirm` 发出时,正文按目标会话类型的规则 `worlds.qq.segment.private` / `worlds.qq.segment.group`
++`qq_send` 直接发出时（旧版 `qq_draft` / `qq_confirm` 保留兼容）,正文按目标会话类型的规则 `worlds.qq.segment.private` / `worlds.qq.segment.group`
+ 切成几条依次发出,条与条之间停顿。规则与默认值照 AstrBot 的分段回复:默认正则 `.*?[。？！~…]+|.+$`
+ 切在句末标点之后并保留标点,`words` 方式切在分段词之后并去掉分段词;切后可按「内容过滤正则」删去指定内容,
+ 空段丢弃。正文超过字数上限(默认 150)或切不出两段时整条发出。间隔取随机区间(默认 1.5–3.5 秒),
+ 或按字数取 `log_底数(字数+1)` 秒再加 0–0.5 秒;第一条不等。默认私聊开、群聊关,改动对下一次发送生效。
+ 
+-引用只跟第一条,图片跟最后一条,每条各记一条 `qq.self`。起草回执列出将分成的几段,发送回执列出各条消息号。
++引用只跟第一条,图片在全部文字之后单独发送且不追加等待,每条各记一条 `qq.self`。起草回执列出将分成的几段,发送回执列出各条消息号。
+ 某条发送失败就停下:一条都没发出时保留草稿可重试;已发出过的,回执写明哪几条已发出,草稿清掉,不会重发。
+ 分段期间这次工具调用一直等到最后一条发出。
+ 
+@@ -78,3 +78,5 @@ JSON 分享卡片的来源名、内容标题和目标链接写入消息正文。
+ 调用时限 40s:协议端等转写结果最长 30s,再加一次普通动作调用的时限 10s。
+ 
+ 语音以 `base64://` 的 `record` 段发出,转成 QQ 语音格式由协议端负责。
++
++`qq_send` 接收与旧草稿相同的收件人、正文和媒体参数，校验后直接发送，不需要确认，也不创建或消费旧草稿。直接发送部分失败时回执列出成功的消息号，不自动重试；不要重复发送已成功的部分。
+diff --git a/src/worlds/qq/definition.ts b/src/worlds/qq/definition.ts
+index eb45cee..d6868a9 100644
+--- a/src/worlds/qq/definition.ts
++++ b/src/worlds/qq/definition.ts
+@@ -65,6 +65,7 @@ export const QQ: WorldDefinition<QQConfigSection> = {
+   },
+   describe: {
+     tools: describeTools(QQ_TOOL_DECLS, {
++      qq_send: { zh: '直接发送 QQ 消息，先文字后独立图片，无需确认。', en: 'Sends QQ text followed by a separate image, without confirmation.' },
+       qq_draft: {
+         zh: '起草一条 QQ 消息(文字、图片、语音或引用回复),先暂存不发。',
+         en: 'Drafts a QQ message (text, image, voice or quote reply) and holds it unsent.',
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 026d201..24fbc2a 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -5,8 +5,7 @@
+  * 每条消息渲染带会话标签(`[群「X」HH:MM]` / `[私聊 HH:MM]`),事件 meta.conv
+  * 记录归属,发送/回复据此路由。
+  *
+- * 发送使用起草-确认门:draft 暂存单槽草稿并形成一次推理屏障。起草期间已经
+- * 到达的会话消息会作为新的 user 事件紧随其后投递；下一次推理可确认或取消。
++ * qq_send 校验后直接发送。旧版 draft/confirm 保留起草确认流程以兼容已有调用。
+  */
+ import { createHash } from 'node:crypto';
+ import type {
+@@ -208,6 +207,13 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+   },
+ };
+ 
++const SEND_DECL: Omit<ToolDef, 'handler'> = {
++  ...DRAFT_DECL,
++  name: 'qq_send',
++  description: 'Send a QQ message immediately. Supply text and image together; text is sent first, then the image as a separate message. No confirmation call is needed. A voice bar must be sent alone. Inspect the receipt for partial failures; never resend parts already sent.',
++  barrierAfter: false,
++};
++
+ const CONFIRM_DECL: Omit<ToolDef, 'handler'> = {
+   name: 'qq_confirm',
+   description:
+@@ -242,6 +248,7 @@ const VIEW_IMAGE_DECL: Omit<ToolDef, 'handler'> = {
+ 
+ /** 全部工具的声明;`qq_view_image` 只在辅助视觉配好时出现。 */
+ export const QQ_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
++  SEND_DECL,
+   DRAFT_DECL,
+   CONFIRM_DECL,
+   ...HISTORY_TOOL_DECLS,
+@@ -1507,7 +1514,7 @@ export class QQWorld implements World {
+    * 按分段规则依次发出:引用只跟第一段,图片在文字后单独发送,仅文字段之间停顿。
+    * 某段发送失败就停下,回执写明已发出的几段;已发出的不再重发。
+    */
+-  private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule | null): Promise<{ receipt: string; sent: number }> {
++  private async sendSegments(target: Conv, opts: OutgoingParts, parts: string[], rule: SegmentRule | null, direct = false): Promise<{ receipt: string; sent: number }> {
+     const ids: string[] = [];
+     let omittedQuote = false;
+     const messages: OutgoingParts[] = parts.map((text, index) => ({ text, ...(index === 0 ? { replyMessageId: opts.replyMessageId } : {}) }));
+@@ -1524,8 +1531,10 @@ export class QQWorld implements World {
+           sent: ids.length,
+           receipt: ids.length
+             ? `[send failed on part ${index + 1} of ${messages.length} → ${this.targetDesc(target)}] ${reason}\n`
+-              + `Parts already sent: ${ids.join(' ')}. The rest was not sent; the draft is cleared so sent parts are not repeated.`
+-            : `[send failed] ${reason} (draft kept; confirm again to retry or cancel)`,
++              + `Parts already sent: ${ids.join(' ')}. ` + (direct
++                ? 'The rest was not sent. Do not resend the parts already sent.'
++                : 'The rest was not sent; the draft is cleared so sent parts are not repeated.')
++            : `[send failed] ${reason}` + (direct ? ' No parts were confirmed sent.' : ' (draft kept; confirm again to retry or cancel)'),
+         };
+       }
+     }
+@@ -1598,6 +1607,7 @@ export class QQWorld implements World {
+ 
+   tools(): ToolDef[] {
+     const list = [
++      this.draftTool(true),
+       this.draftTool(),
+       this.confirmTool(),
+       ...createHistoryTools({
+@@ -1612,9 +1622,9 @@ export class QQWorld implements World {
+     return list;
+   }
+ 
+-  private draftTool(): ToolDef {
++  private draftTool(direct = false): ToolDef {
+     return {
+-      ...DRAFT_DECL,
++      ...(direct ? SEND_DECL : DRAFT_DECL),
+       handler: async (args, ctx) => {
+         const host = this.host;
+         const driver = this.driver;
+@@ -1675,6 +1685,20 @@ export class QQWorld implements World {
+           previewLine = `[will send voice: ${voiceArg}]`;
+         }
+ 
++        if (direct) {
++          try {
++            const outgoing = { text, replyMessageId: rep.mid, imageRef, voiceRef,
++              imageBytes: imageRef ? host.blob(imageRef)!.bytes : undefined,
++              voiceBytes: voiceRef ? host.blob(voiceRef)!.bytes : undefined };
++            const { parts, rule } = this.segmentsFor(target, text);
++            if ((rule && parts.length > 1) || (text.trim() && outgoing.imageBytes))
++              return (await this.sendSegments(target, outgoing, parts, rule, true)).receipt;
++            return await this.sendToTarget(target, outgoing);
++          } catch (error) {
++            return `[send failed] ${error instanceof Error ? error.message : String(error)}`;
++          }
++        }
++
+         this.pendingDraft = { target, text, replyMessageId: rep.mid, imageRef, voiceRef };
+ 
+         // 排出当下已积、尚未投递的QQ会话事件(consume-once)。正文不能伪装成
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+index 6520b7c..37fb1ea 100644
+--- a/tests/integration/qq-segment.test.ts
++++ b/tests/integration/qq-segment.test.ts
+@@ -123,3 +123,41 @@ it('declares both rule sets as hot settings in every supported UI language', ()
+   const titles = LANGUAGES.map(language => qqConfigGroup(language).schema.properties!['worlds.qq.segment.private.enabled'].title);
+   expect(new Set(titles).size).toBe(LANGUAGES.length);
+ });
++
++
++it.each(['private', 'group'] as const)('qq_send sends text then image in one call for %s', async (kind) => {
++  const { cfg, mock, tool, ctx, incoming, self, done, memoryDir } = await fixture();
++  try {
++    cfg.worlds.qq.quoteReply = true;
++    const mid = await incoming(kind);
++    const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
++    writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
++    const receipt = await tool('qq_send').handler({ reply_to: String(mid), text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx);
++    expect(receipt).toContain(`sent as ${kind === 'private' ? 3 : 2} messages`);
++    expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type)))
++      .toEqual(kind === 'private' ? [['reply', 'text'], ['text'], ['image']] : [['reply', 'text'], ['image']]);
++    expect(self()).toHaveLength(mock.outbox.length);
++    expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toContain('no draft to confirm');
++    expect(tool('qq_send').barrierAfter).toBe(false);
++  } finally { await done(); }
++}, 15000);
++
++it('qq_send validates before sending and reports partial image failure without replaying text', async () => {
++  const { mock, tool, ctx, incoming, self, done, memoryDir } = await fixture();
++  try {
++    await incoming('private');
++    const args = { to: 'private:1001', text: 'hello', image: 'mem:external/qq/images/cat.png' };
++    expect(await tool('qq_send').handler(args, ctx)).toContain('no blob');
++    expect(mock.outbox).toHaveLength(0);
++    const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
++    writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
++    let calls = 0;
++    mock.setActionHandler('send_private_msg', () => (++calls === 2 ? { retcode: 1200, message: 'offline' } : { data: { message_id: 7101 } }));
++    const receipt = await tool('qq_send').handler(args, ctx);
++    expect(receipt).toContain('send failed on part 2 of 2');
++    expect(receipt).toContain('Parts already sent: #7101.');
++    expect(receipt).not.toContain('draft');
++    expect(calls).toBe(2);
++    expect(self()).toHaveLength(1);
++  } finally { await done(); }
++}, 15000);

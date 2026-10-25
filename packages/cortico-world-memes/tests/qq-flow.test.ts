@@ -6,7 +6,7 @@ import { MockOneBot } from '../../../vendor/cortico/tests/helpers/mock-onebot.ts
 import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, textReply, toolReply } from '../../../vendor/cortico/tests/core/helpers.ts';
 import { archive, world, PNG, FakeModelHub } from './helpers.ts';
 
-it('retrieved meme traverses the real session blob store and QQ draft/confirm over a local OneBot socket', async () => {
+it('retrieved meme traverses the real session blob store and QQ direct send over a local OneBot socket', async () => {
   const tmp = makeTmpDir();
   const onebot = new MockOneBot({ port: 0, groupId: 424242, selfId: 5000, selfNickname: 'bot', selfCard: 'bot', groupName: 'fixture' });
   const port = await onebot.start();
@@ -49,9 +49,8 @@ it('retrieved meme traverses the real session blob store and QQ draft/confirm ov
         const history = JSON.stringify(llm.calls.at(-1)?.messages);
         const handle = history.match(/log:[a-f0-9]+\.png/)?.[0];
         expect(handle).toBeTruthy();
-        return toolReply([{ name: 'qq_draft', args: { to: 'group:424242', image: handle } }]);
+        return toolReply([{ name: 'qq_send', args: { to: 'group:424242', image: handle } }]);
       }
-      if (stage === 4) return toolReply([{ name: 'qq_confirm', args: { decision: 'send' } }]);
       return textReply('');
     };
     onebot.emitGroupMessage({ user_id: 1001, nickname: 'fixture', text: '给我一个抱抱' });
