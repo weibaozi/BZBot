@@ -2,6 +2,8 @@
 
 ## 0.6.1
 
+- Require one meme search before replying when the random reminder fires; choose whether to send an image after reviewing candidates, and reuse candidates already retrieved in the turn.
+
 - Include admitted QQ group context in the proactive meme reminder probability, for both random replies and forced mentions. Ignore archive-only messages; explicit requests remain independent of the random reminder.
 
 - Advance the WebUI asset version so cached 0.6.0 clients load the new settings.
