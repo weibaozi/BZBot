@@ -1,0 +1,5 @@
+{
+  "extends": "../cortico-bot-mybot/tsconfig.web.json",
+  "compilerOptions": { "baseUrl": ".", "paths": { "cortico/*": ["../../vendor/cortico/src/*"] } },
+  "include": ["webui/**/*.ts"]
+}
