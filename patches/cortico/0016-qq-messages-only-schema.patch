@@ -1,0 +1,100 @@
+diff --git a/src/worlds/qq/ENV_PROMPT.md b/src/worlds/qq/ENV_PROMPT.md
+index 71ea59f..b05b3ae 100644
+--- a/src/worlds/qq/ENV_PROMPT.md
++++ b/src/worlds/qq/ENV_PROMPT.md
+@@ -4,8 +4,8 @@
+ {{qq.conversations | (还没有配置任何监听的群或私聊。)}}
+ {{qq.identity | (与QQ的连接尚未建立,群名和你的账号信息暂时未知。)}}
+ 
+-发送回复使用 qq_send：一次提交文字和图片，直接发送，不需要 qq_confirm。插件先发文字，再单独发图。qq_draft / qq_confirm 是旧版兼容工具，新回复不要使用。
++发送回复使用 qq_send：一次提交 messages 和 image，直接发送，不需要 qq_confirm。插件先发文字，再单独发图。qq_draft / qq_confirm 是旧版兼容工具，新回复不要使用。
+ 
+-群聊需要真正 @ 某人时，给 qq_send 传有序 messages 数组，例如 [{"type":"plain","text":"早上好，特别是"},{"type":"mention_user","mention_user_id":"上下文中的实际QQ号"},{"type":"plain","text":"，今天也要开心！"}]。可以在句中多次穿插 mention_user，必须使用上下文里确认的 QQ 号，不猜号码。messages 和 text 二选一，普通文字继续用 text；文字里的 @昵称 不会产生提醒。私聊不用 mention_user。图片仍放在同一次调用的 image 参数里，文字（含 @）按分段设置先发送，图片最后单独发送。
++群聊需要真正 @ 某人时，给 qq_send 传有序 messages 数组，例如 [{"type":"plain","text":"早上好，特别是"},{"type":"mention_user","mention_user_id":"上下文中的实际QQ号"},{"type":"plain","text":"，今天也要开心！"}]。可以在句中多次穿插 mention_user，必须使用上下文里确认的 QQ 号，不猜号码。所有文字统一使用 messages：普通回复写 [{"type":"plain","text":"回复内容"}]，不要传顶层 text；文字里的 @昵称 不会产生提醒。私聊不用 mention_user。图片仍放在同一次调用的 image 参数里，文字（含 @）按分段设置先发送，图片最后单独发送。
+ 
+ 群聊默认只在本地归档。你收到 qq.group_context 时，里面是该群概率触发或被 @ 触发后抽取的最近消息，不是每条消息都要求分别回复；结合当前话题回复即可。被 @ 触发时回应提及你的消息。需要更早记录时使用 qq_read_history / qq_grep_history，并指定该群会话；不要假定没出现在当前上下文的消息不存在。
+diff --git a/src/worlds/qq/README.md b/src/worlds/qq/README.md
+index 891eaee..fb8e53c 100644
+--- a/src/worlds/qq/README.md
++++ b/src/worlds/qq/README.md
+@@ -90,3 +90,5 @@ JSON 分享卡片的来源名、内容标题和目标链接写入消息正文。
+ ## 群聊回复
+ 
+ 群消息默认本地归档，不进入 session。`groupReply.probability` 默认 10（百分比），0 不随机触发，100 每条触发；`forceMention` 默认开启，被 @ 时绕过概率。触发后按群合并，只追加 `recentMessages`（默认 20）条最近聊天及其已完成附件；不混入其他群。私聊不变。原始群消息和补充事件不会随后搭便车或重启补投。语音概率命中时等待转写完成再触发。此前已进入 session 的对话保持原样，需要更多记录时用 QQ 历史工具读取。概率决定是否让模型处理，不能保证模型一定发送消息。
++
++模型工具声明只暴露 `messages`，普通文字也使用 `plain` 组件。顶层 `text` 仅在后台保留旧调用兼容，不再向模型展示。空 `messages: []` 视为未提供，可与旧 text 或单独媒体兼容；两个非空正文仍拒绝。
+diff --git a/src/worlds/qq/world.ts b/src/worlds/qq/world.ts
+index 67f3cc5..38e4f7b 100644
+--- a/src/worlds/qq/world.ts
++++ b/src/worlds/qq/world.ts
+@@ -191,9 +191,8 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+         description:
+           'Target conversation: "group:<id>" or "private:<id>" (numeric QQ group/user id, not a name). Optional when reply_to is given (taken from the quoted message).',
+       },
+-      text: { type: 'string', description: 'Plain text, alternative to messages. Literal @names are not mentions.' },
+       messages: {
+-        type: 'array', description: 'Ordered text and mention components. Use instead of text for inline mentions; only group chats support mention_user. Keep image in the image argument; it is sent last.',
++        type: 'array', description: 'Ordered message components. For ordinary text use [{"type":"plain","text":"your reply"}]. Only group chats support mention_user. Keep image in the image argument; it is sent last.',
+         items: { type: 'object', properties: {
+           type: { type: 'string', enum: ['plain', 'mention_user'] },
+           text: { type: 'string', description: 'Text for a plain component.' },
+@@ -210,7 +209,7 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+         type: 'string',
+         description:
+           'Optional. Audio to send as a QQ voice bar, given by handle the same way as image. '
+-          + 'A voice bar is a message of its own: leave text, image and reply_to out. '
++          + 'A voice bar is a message of its own: leave messages, image and reply_to out. '
+           + 'The protocol end converts the audio it accepts (wav, mp3) to what QQ plays.',
+       },
+       reply_to: {
+@@ -226,7 +225,7 @@ const DRAFT_DECL: Omit<ToolDef, 'handler'> = {
+ const SEND_DECL: Omit<ToolDef, 'handler'> = {
+   ...DRAFT_DECL,
+   name: 'qq_send',
+-  description: 'Send a QQ message immediately. Supply text and image together; text is sent first, then the image as a separate message. No confirmation call is needed. A voice bar must be sent alone. Inspect the receipt for partial failures; never resend parts already sent.',
++  description: 'Send a QQ message immediately. Supply messages (plain text and optional mentions) and image together; messages are sent first, then the image as a separate message. No confirmation call is needed. A voice bar must be sent alone. Inspect the receipt for partial failures; never resend parts already sent.',
+   barrierAfter: false,
+ };
+ 
+diff --git a/tests/integration/qq-segment.test.ts b/tests/integration/qq-segment.test.ts
+index b8d5c35..e028706 100644
+--- a/tests/integration/qq-segment.test.ts
++++ b/tests/integration/qq-segment.test.ts
+@@ -4,6 +4,7 @@ import { join } from 'node:path';
+ import { assembleBot } from '../../bots/corti-soulmate/assemble.ts';
+ import { nullLogger } from '../../src/core/util.ts';
+ import { LANGUAGES } from '../../src/core/language.ts';
++import { QQ_TOOL_DECLS } from '../../src/worlds/qq/world.ts';
+ import { qqConfigGroup, qqSegmentConfigGroup } from '../../src/worlds/qq/config.ts';
+ import { MockOneBot } from '../helpers/mock-onebot.ts';
+ import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, sleep } from '../core/helpers.ts';
+@@ -102,7 +103,7 @@ it.each(['private', 'group'] as const)('an image follows all text in a separate
+     await incoming(kind);
+     const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
+     writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+-    expect(await tool('qq_draft').handler({ to: kind === 'private' ? 'private:1001' : 'group:424242', text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx)).toContain('Text will be sent first');
++    expect(await tool('qq_draft').handler({ to: kind === 'private' ? 'private:1001' : 'group:424242', messages: [{ type: 'plain', text: '看。猫' }], image: 'mem:external/qq/images/cat.png' }, ctx)).toContain('Text will be sent first');
+     expect(await tool('qq_confirm').handler({ decision: 'send' }, ctx)).toContain(`sent as ${kind === 'private' ? 3 : 2} messages`);
+     expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type))).toEqual(kind === 'private' ? [['text'], ['text'], ['image']] : [['text'], ['image']]);
+     expect(self().at(-1)!.text).toContain('你: [图片: mem:external/qq/images/cat.png]');
+@@ -134,7 +135,7 @@ it.each(['private', 'group'] as const)('qq_send sends text then image in one cal
+     const mid = await incoming(kind);
+     const images = join(memoryDir, 'external', 'qq', 'images'); mkdirSync(images, { recursive: true });
+     writeFileSync(join(images, 'cat.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+-    const receipt = await tool('qq_send').handler({ reply_to: String(mid), text: '看。猫', image: 'mem:external/qq/images/cat.png' }, ctx);
++    const receipt = await tool('qq_send').handler({ reply_to: String(mid), messages: [{ type: 'plain', text: '看。猫' }], image: 'mem:external/qq/images/cat.png' }, ctx);
+     expect(receipt).toContain(`sent as ${kind === 'private' ? 3 : 2} messages`);
+     expect(mock.outbox.map(entry => (entry.params.message as Array<{ type: string }>).map(segment => segment.type)))
+       .toEqual(kind === 'private' ? [['reply', 'text'], ['text'], ['image']] : [['reply', 'text'], ['image']]);
+@@ -203,3 +204,11 @@ it('rejects malformed chains before sending and keeps literal at text unchanged'
+   expect(mock.outbox[0].params.message).toEqual([{type:'text',data:{text:'hello @10001'}}]);
+  }finally{await done();}
+ },15000);
++
++it('exposes messages as the only text entry point for both sending tools',()=>{
++ for(const name of ['qq_send','qq_draft']){
++  const schema=QQ_TOOL_DECLS.find(tool=>tool.name===name)!.parameters as {properties:Record<string,unknown>};
++  expect(schema.properties).not.toHaveProperty('text');
++  expect(schema.properties.messages).toMatchObject({type:'array',items:{properties:{type:{enum:['plain','mention_user']},text:{type:'string'}}}});
++ }
++});
