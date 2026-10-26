@@ -8,10 +8,13 @@ import { proactiveConfigGroup, type ProactiveConfigSection } from './config.ts';
 import { configError, localTime, nextTime, quietNow } from './server/schedule.ts';
 import { readState, writeState, type ProactiveState } from './server/state.ts';
 import { strings } from './strings.ts';
+import { registerDeliveryHint } from 'cortico/worlds/delivery-hints.ts';
+import { ContactTime } from './server/contact-time.ts';
 
 export class ProactiveWorld implements World {
   readonly id = 'proactive';
   private host?: WorldHost;
+  private releaseContactTime?: () => void;
   private state!: ProactiveState;
   private timer?: ReturnType<typeof setInterval>;
   private queued = false;
@@ -38,12 +41,16 @@ export class ProactiveWorld implements World {
     this.state.attempt = null;
     if (this.state.nextAt <= now) this.state.nextAt = nextTime(this.ctx.cfg, now);
     this.save();
+    const contactTime = new ContactTime(join(this.ctx.dataDir, 'proactive', 'contacts.json'), this.ctx.timezone,
+      () => this.ctx.globals?.().trustedQQ ?? [], host.store);
+    this.releaseContactTime = registerDeliveryHint(this.ctx.botDir, 'proactive.contact-time', contactTime.hint);
     this.timer = setInterval(() => {
       try { this.pulse(); } catch (error) { host.log.error('proactive scheduler failed', { error: String(error) }); }
     }, 1000);
     this.timer.unref();
   }
   async stop() {
+    this.releaseContactTime?.(); this.releaseContactTime = undefined;
     clearInterval(this.timer); this.timer = undefined; this.revision++; this.queued = false;
     if (this.host) { this.sync(Date.now()); this.save(); }
     this.host = undefined;

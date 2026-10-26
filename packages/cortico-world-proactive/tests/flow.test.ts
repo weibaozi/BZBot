@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assembleBot } from '../../../vendor/cortico/bots/corti-soulmate/assemble.ts';
 import { MockOneBot } from '../../../vendor/cortico/tests/helpers/mock-onebot.ts';
@@ -12,6 +12,7 @@ import { readState, writeState } from '../server/state.ts';
 async function fixture() {
   const tmp=makeTmpDir(), mock=new MockOneBot({port:0,groupId:424242});
   const port=await mock.start(), cfg=makeCfg(), llm=new FakeLLM();
+  const trustedQQ = ['10001'];
   cfg.worlds.qq={...cfg.worlds.qq,enabled:true,wsUrl:`ws://127.0.0.1:${port}`,groups:[{id:424242,enabled:true}],privates:[{id:10001,enabled:true},{id:10002,enabled:true}]};
   cfg.worlds.qq.segment.private.interval=[0,0];
   cfg.worlds.console.enabled=false;cfg.web.port=0;cfg.tick.dayIntervalMinutes=[999,999];cfg.tick.nightIntervalMinutes=null;
@@ -20,6 +21,7 @@ async function fixture() {
   const bot=assembleBot(makeLoaded({config:cfg,rootDir:tmp.dir,memoryDir,dataDir:join(tmp.dir,'data')}),{llm});
   const options={...structuredClone(PROACTIVE_DEFAULTS),enabled:true,targetQQ:'10001'};
   const create=()=>new ProactiveWorld({id:'proactive',cfg:options,timezone:'UTC',botName:'fixture',botDir:tmp.dir,packageDir:tmp.dir,dataDir:join(tmp.dir,'data'),repoRoot:tmp.dir,models:NO_MODELS,
+    globals:()=>({trustedQQ}),
     secret:()=>{throw new Error('Unexpected secret');},storeSecret:()=>{throw new Error('Unexpected secret');},persist:()=>{throw new Error('Unexpected persist');},restart:async()=>{}});
   let instance=create();
   await bot.start();await bot.qqWorld!.waitReady(5000);await bot.core.mountWorld(instance);
@@ -37,8 +39,35 @@ async function fixture() {
   };
   const reload=async(before?:()=>void)=>{await bot.core.unmountWorld('proactive');before?.();instance=create();await bot.core.mountWorld(instance);await waitIdle();return instance;};
   const done=async()=>{await bot.stop();await mock.close();tmp.cleanup();};
-  return {tmp,mock,bot,llm,options,get instance(){return instance;},incoming,trigger,reload,waitIdle,done};
+  return {tmp,mock,bot,llm,options,trustedQQ,get instance(){return instance;},incoming,trigger,reload,waitIdle,done};
 }
+
+it('appends trusted contact time without changing the prefix, persists across reload and ignores other users', async()=>{
+  const f=await fixture();try{
+    f.options.active=false;
+    await f.incoming('首次交流');
+    const first=f.llm.calls.at(-1)!.messages, prefix=JSON.stringify(first[0]);
+    expect(JSON.stringify(first)).toContain('此前暂无交流时间记录');
+    expect(prefix).not.toContain('[交流时间]');
+    const path=join(f.tmp.dir,'data','proactive','contacts.json');
+    const initial=readFileSync(path,'utf8');
+    await f.incoming('其他人的消息',10002);
+    expect(readFileSync(path,'utf8')).toBe(initial);
+    expect(JSON.stringify(f.llm.calls.at(-1)!.messages[0])).toBe(prefix);
+    await f.reload(()=>{
+      const contacts=JSON.parse(initial);
+      contacts['10001'].at=new Date(Date.now()-3*86400000-4*3600000-60000).toISOString();
+      writeFileSync(path,JSON.stringify(contacts));
+    });
+    await f.incoming('隔了几天回来');
+    const last=JSON.stringify(f.llm.calls.at(-1)!.messages);
+    expect(last).toContain('3 天 4 小时');
+    expect(last).toContain('已有相处记忆');
+    f.trustedQQ.splice(0);
+    await f.incoming('已取消白名单');
+    expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({});
+  }finally{await f.done();}
+},20000);
 
 it('reuses history and keeps the prefix stable, counts split sends once, and resets only on the target reply', async()=>{
   const f=await fixture();try{
