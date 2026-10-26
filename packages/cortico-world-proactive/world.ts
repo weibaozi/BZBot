@@ -15,6 +15,7 @@ export class ProactiveWorld implements World {
   readonly id = 'proactive';
   private host?: WorldHost;
   private releaseContactTime?: () => void;
+  private contactTime?: ContactTime;
   private state!: ProactiveState;
   private timer?: ReturnType<typeof setInterval>;
   private queued = false;
@@ -41,8 +42,8 @@ export class ProactiveWorld implements World {
     this.state.attempt = null;
     if (this.state.nextAt <= now) this.state.nextAt = nextTime(this.ctx.cfg, now);
     this.save();
-    const contactTime = new ContactTime(join(this.ctx.dataDir, 'proactive', 'contacts.json'), this.ctx.timezone,
-      () => this.ctx.globals?.().trustedQQ ?? [], host.store);
+    const contactTime = this.contactTime = new ContactTime(join(this.ctx.dataDir, 'proactive', 'contacts.json'), this.ctx.timezone,
+      () => this.ctx.globals?.().trustedQQ ?? [], host.store, () => this.ctx.cfg.contactGapHours ?? 1);
     this.releaseContactTime = registerDeliveryHint(this.ctx.botDir, 'proactive.contact-time', contactTime.hint);
     this.timer = setInterval(() => {
       try { this.pulse(); } catch (error) { host.log.error('proactive scheduler failed', { error: String(error) }); }
@@ -68,6 +69,7 @@ export class ProactiveWorld implements World {
   }
   private sync(now: number) {
     if (!this.host) return;
+    this.contactTime?.sync();
     const before = JSON.stringify(this.state);
     if (this.state.target !== this.ctx.cfg.targetQQ) {
       this.state = this.fresh(now); this.revision++; this.queued = false;

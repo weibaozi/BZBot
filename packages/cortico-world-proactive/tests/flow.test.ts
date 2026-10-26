@@ -39,15 +39,31 @@ async function fixture() {
   };
   const reload=async(before?:()=>void)=>{await bot.core.unmountWorld('proactive');before?.();instance=create();await bot.core.mountWorld(instance);await waitIdle();return instance;};
   const done=async()=>{await bot.stop();await mock.close();tmp.cleanup();};
-  return {tmp,mock,bot,llm,options,trustedQQ,get instance(){return instance;},incoming,trigger,reload,waitIdle,done};
+  return {tmp,mock,bot,llm,cfg,options,trustedQQ,get instance(){return instance;},incoming,trigger,reload,waitIdle,done};
 }
+
+it('records a trusted sender in a real group without triggering a reply', async()=>{
+  const f=await fixture();try{
+    f.cfg.worlds.qq.groupReply={probability:0,recentMessages:5,forceMention:false,sleepEnabled:false};
+    const before=f.llm.calls.length;
+    const mid=f.mock.emitGroupMessage({user_id:10001,text:'群聊里路过，不需要回复'});
+    await expect.poll(()=>f.bot.core.store.range({source:'qq'}).some(e=>e.meta?.message_id===mid)).toBe(true);
+    f.instance.status();
+    const path=join(f.tmp.dir,'data','proactive','contacts.json');
+    const saved=JSON.parse(readFileSync(path,'utf8'))['10001'];
+    expect(f.bot.core.store.get(saved.cursor)?.meta?.user_id).toBe(10001);
+    expect(f.llm.calls.length).toBe(before);
+    await f.incoming('另一个人的消息',10002);
+    expect(JSON.parse(readFileSync(path,'utf8'))['10001']).toEqual(saved);
+  }finally{await f.done();}
+},15000);
 
 it('appends trusted contact time without changing the prefix, persists across reload and ignores other users', async()=>{
   const f=await fixture();try{
     f.options.active=false;
     await f.incoming('首次交流');
     const first=f.llm.calls.at(-1)!.messages, prefix=JSON.stringify(first[0]);
-    expect(JSON.stringify(first)).toContain('此前暂无交流时间记录');
+    expect(JSON.stringify(first)).not.toContain('[交流时间]');
     expect(prefix).not.toContain('[交流时间]');
     const path=join(f.tmp.dir,'data','proactive','contacts.json');
     const initial=readFileSync(path,'utf8');
