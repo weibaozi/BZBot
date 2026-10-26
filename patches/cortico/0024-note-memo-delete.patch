@@ -1,0 +1,139 @@
+diff --git a/bots/corti-soulmate/persona/CORE.md b/bots/corti-soulmate/persona/CORE.md
+index b0aeb68..2385c91 100644
+--- a/bots/corti-soulmate/persona/CORE.md
++++ b/bots/corti-soulmate/persona/CORE.md
+@@ -49,13 +49,14 @@
+ 
+ | 区域 | 主意识(平时的你) | 梦 |
+ |------|------|------|
+-| note/ memo/ 及自建目录 | 读写改名 | 读写改名删除 |
++| note/ memo/ | 读写改名删除 | 读写改名删除 |
++| 其他自建目录 | 读写改名 | 读写改名删除 |
+ | external/(你自己的工具抽屉) | 读写增删改名 | 读写改名删除 |
+ | people/ | 读+追加 | 读写(含改名合并) |
+ | WORLDVIEW.md | 只读 | 读写 |
+ | CONSTITUTION.md | 只读 | 改内容(不能改名删除) |
+ 
+-意识写笔记和备忘,只有梦重写。越权的写入会被工具层拒绝,并告诉你该走哪条路。
++主意识可以整理、移动和删除 note/、memo/ 下的文件；人物档案重写、世界观与宪法修订归梦。越权的写入会被工具层拒绝,并告诉你该走哪条路。
+ 
+ 宪法修订归梦,凭判断而不是凭时间:证据是否充分、修改现在是否必要、判断是否可能持久。WORLDVIEW 只上升跨日期重复或独立事件复现的模式,由梦自己作语义判断。
+ 
+diff --git a/bots/corti-soulmate/persona/permissions.ts b/bots/corti-soulmate/persona/permissions.ts
+index 7254eef..8fdff03 100644
+--- a/bots/corti-soulmate/persona/permissions.ts
++++ b/bots/corti-soulmate/persona/permissions.ts
+@@ -1,7 +1,7 @@
+ /**
+  * 写权限矩阵,机械硬拦。
+  *
+- * 一句话纪律:意识写笔记和备忘,只有梦重写。拒绝理由是一句话,会作为工具回执
++ * 主意识可整理笔记和备忘；人物重写、世界观与宪法修订归梦。拒绝理由作为工具回执
+  * 返回给 agent——写清楚为什么,以及该走什么路径。
+  */
+ import { normalizeWorkspacePath } from '../../cormini/persona/memory.ts';
+@@ -22,7 +22,7 @@ export type AccessResult = { ok: true } | { ok: false; reason: string };
+ 
+ export type Zone = 'note' | 'memo' | 'people' | 'worldview' | 'constitution' | 'external' | 'other';
+ 
+-/** 区域判定按路径前缀。自建目录归"other",与 note/ 同权。 */
++/** 区域判定按路径前缀。自建目录归"other",主意识不能删除。 */
+ export function zoneOf(relPath: string): Zone {
+   const p = normalizeWorkspacePath(relPath);
+   const lower = p.toLowerCase();
+@@ -47,6 +47,7 @@ export function checkAccess(role: PersonaRole, op: FileOp, relPath: string): Acc
+     switch (zone) {
+       case 'note':
+       case 'memo':
++        return ALLOW;
+       case 'other':
+         if (op === 'write' || op === 'append' || op === 'rename') return ALLOW;
+         return deny('Delete is not permitted; the dream clears the workspace. To relocate a file, use move_file.');
+diff --git a/bots/corti-soulmate/persona/tools.ts b/bots/corti-soulmate/persona/tools.ts
+index 8155b1e..356b7d1 100644
+--- a/bots/corti-soulmate/persona/tools.ts
++++ b/bots/corti-soulmate/persona/tools.ts
+@@ -157,6 +157,7 @@ export function toolUsageText(role: PersonaRole, caps: { residentCap: number; ac
+         '* `memo/` — the temporal layer: schedule, events, deadlines, whatever you are tracking right now. Its top-level files (resident) stay fully visible every prefix; `active/` shows filenames only; `archived/` is cold storage you open by hand.',
+         `* ${caps.residentCap} resident, up to ${caps.activeCap} in \`active/\`. When a tier is full nothing auto-sinks — move one file down yourself with \`move_file\` (resident → \`active/\`, \`active/\` → \`archived/\`), then write the new one.`,
+         '* `note/` — the durable layer, not shown in full each prefix; you read it when you need it.',
++        '* You may edit, move and delete files under `note/` and `memo/` while awake. Keep useful information when consolidating; use `delete_file` for files you no longer need. `people/` remains append-only, and `WORLDVIEW.md` and `CONSTITUTION.md` remain read-only while awake.',
+         ' * `note/playbook/` — guides you consult before acting. The names of what is filed there surface in MEMORY 0, so you always know what you can look up; open one with `read_file`.',
+         ' * `note/library/` — whatever you want to keep for later. Arrange it however suits you; you can make subdirectories under it.',
+         '* `external/` — your own tool drawer (stickers you keep with `save_blob` live in `external/qq/images/`); you may create, rename and delete there freely.',
+@@ -173,7 +174,7 @@ export function toolUsageText(role: PersonaRole, caps: { residentCap: number; ac
+       ].join('\n');
+     case 'dream':
+       return [
+-        'You are the only rewriter of this workspace: read, write, append, edit, move and delete are all open to you, CONSTITUTION.md included.',
++        'You may read, write, append, edit, move and delete workspace files. Only you may rewrite people/ and revise WORLDVIEW.md and CONSTITUTION.md; CONSTITUTION.md cannot be renamed or deleted.',
+         '',
+         '* `edit_file` requires `old_string` to match exactly once; for large changes, replace the whole file with `write_file`',
+         `* memo tiers are plain folders you keep in shape with \`move_file\` (${caps.residentCap} resident shown in full, up to ${caps.activeCap} in \`active/\`, cold storage in \`archived/\`); caps are enforced when writing, so move a file down before overfilling a tier`,
+diff --git a/tests/corti-soulmate/permissions.test.ts b/tests/corti-soulmate/permissions.test.ts
+index a071a91..dc234a6 100644
+--- a/tests/corti-soulmate/permissions.test.ts
++++ b/tests/corti-soulmate/permissions.test.ts
+@@ -28,14 +28,14 @@ describe('区域判定 zoneOf', () => {
+   });
+ });
+ 
+-describe('写权限矩阵(意识写笔记和备忘,只有梦重写)', () => {
++describe('写权限矩阵', () => {
+   it('两个角色所有区域可读', () => {
+     for (const role of ['main', 'dream'] as PersonaRole[]) {
+       for (const p of ['note/a.md', 'memo/b.md', 'people/c.md', 'WORLDVIEW.md', 'CONSTITUTION.md', 'x/y.md']) ok(role, 'read', p);
+     }
+   });
+ 
+-  it('main:note/memo/其他读写改名(move_file);仍不许delete', () => {
++  it('main:note/memo可删除整理，其他自建目录仍不能删除', () => {
+     ok('main', 'write', 'note/a.md');
+     ok('main', 'append', 'note/a.md');
+     ok('main', 'write', 'memo/b.md');
+@@ -44,7 +44,8 @@ describe('写权限矩阵(意识写笔记和备忘,只有梦重写)', () => {
+     ok('main', 'rename', 'note/a.md');
+     ok('main', 'rename', 'memo/b.md');
+     ok('main', 'rename', '自建目录/c.md');
+-    expect(no('main', 'delete', 'memo/b.md')).toContain('move_file');
++    for (const path of ['note/a.md', 'note/library/a.md', 'memo/b.md', 'memo/active/b.md', 'memo/archived/b.md']) ok('main', 'delete', path);
++    expect(no('main', 'delete', '自建目录/c.md')).toContain('move_file');
+   });
+ 
+   it('main:external/ 是自己的工具抽屉,增删改名清理全允许', () => {
+diff --git a/tests/corti-soulmate/tools.test.ts b/tests/corti-soulmate/tools.test.ts
+index 5334cb9..0f08fcd 100644
+--- a/tests/corti-soulmate/tools.test.ts
++++ b/tests/corti-soulmate/tools.test.ts
+@@ -83,16 +83,27 @@ describe('工具集(按认知路径)', () => {
+     expect(existsSync(join(dir, 'CONSTITUTION.md'))).toBe(true);
+   });
+ 
+-  it('main 的 delete_file 只在 external/ 生效', async () => {
++  it('main 可以删除 note/memo/external 文件，其他目录仍受保护', async () => {
+     await pick(main, 'write_file').handler({ path: 'external/qq/images/旧图.png', content: 'x' }, ctxFor('main'));
+     const deleted = await pick(main, 'delete_file').handler({ path: 'external/qq/images/旧图.png' }, ctxFor('main'));
+     expect(deleted).toBe('[deleted] external/qq/images/旧图.png');
+     expect(existsSync(join(dir, 'external', 'qq', 'images', '旧图.png'))).toBe(false);
+ 
+-    await pick(main, 'write_file').handler({ path: 'note/不能删.md', content: 'x' }, ctxFor('main'));
+-    const denied = await pick(main, 'delete_file').handler({ path: 'note/不能删.md' }, ctxFor('main'));
++    for (const path of ['note/旧笔记.md', 'memo/过期.md', 'memo/active/完成.md', 'memo/archived/重复.md']) {
++      expect(await pick(main, 'write_file').handler({ path, content: 'x' }, ctxFor('main'))).toContain('[written]');
++      expect(await pick(main, 'delete_file').handler({ path }, ctxFor('main'))).toBe(`[deleted] ${path}`);
++      expect(existsSync(join(dir, path))).toBe(false);
++    }
++    await pick(main, 'write_file').handler({ path: 'other/不能删.md', content: 'x' }, ctxFor('main'));
++    const denied = await pick(main, 'delete_file').handler({ path: 'other/不能删.md' }, ctxFor('main'));
+     expect(denied).toContain('dream');
+-    expect(existsSync(join(dir, 'note', '不能删.md'))).toBe(true);
++    expect(existsSync(join(dir, 'other', '不能删.md'))).toBe(true);
++    await pick(main, 'append_file').handler({ path: 'people/保留.md', content: 'Person' }, ctxFor('main'));
++    await pick(dream, 'write_file').handler({ path: 'CONSTITUTION.md', content: 'Constitution' }, ctxFor('dream'));
++    for (const path of ['people/保留.md', 'CONSTITUTION.md']) {
++      expect(await pick(main, 'delete_file').handler({ path }, ctxFor('main'))).toContain('[delete failed]');
++      expect(existsSync(join(dir, path))).toBe(true);
++    }
+   });
+ 
+   it('read_file("CORE.md") 返回随软件走的机制说明;写它被拒', async () => {

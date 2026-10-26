@@ -115,7 +115,8 @@ meta        embedding_model, embedding_dim, indexed_cursor, schema_version
 
 | 区域 | 平时 | 做梦时 |
 |---|---|---|
-| `memo/`、`note/`、`kb/notes/` | 读写 | 读写删 |
+| `memo/`、`note/` | 读写、移动、删除 | 读写删 |
+| `kb/notes/` | 读写 | 读写删 |
 | `PARTNER.md`、`partner/` | 读写 | 读写 |
 | `people/` | 读 + 追加 | 读写（含合并） |
 | `WORLDVIEW.md` | 只读 | 读写 |
