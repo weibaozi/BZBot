@@ -11,7 +11,7 @@ export class MemeSemantic {
     private config: () => MemesConfigSection['memes'], private models: ModelHub,
     private reportUsage: WorldHost['reportUsage']) {}
 
-  async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal, ids?: string[]) {
+  async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal, ids?: string[], approved = false) {
     const packs = await this.library.packs();
     if (!packs.some(p => p.id === packId)) throw new Error('Select a pack');
     const pack = packs.find(p => p.id === packId)!;
@@ -30,7 +30,7 @@ export class MemeSemantic {
         signal.throwIfAborted();
         const saved = await this.library.applySemantic(id, hash(JSON.stringify(image)), { caption: result.caption.trim(),
           tags: [...new Set((result.tags as string[]).map(t => t.trim()).filter(t => t && !t.startsWith('category:')))], visibleText: result.visible_text,
-          searchable: !result.needs_review && !['needs_review', '_pending_review'].includes(image.category) });
+          searchable: approved || (!result.needs_review && !['needs_review', '_pending_review'].includes(image.category)) });
         if (!saved) progress.skipped++;
       } catch (error) {
         signal.throwIfAborted();

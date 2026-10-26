@@ -58,6 +58,10 @@ export class MemeCollection {
   private item(id:string) { const item=this.state.items.find(i=>i.id===id);if(!item)throw new Error('Unknown collected image');return item; }
   async image(id:string) { await this.serial;const item=this.item(id);return {bytes:await readFile(join(this.dir,'images',item.id)),mime:item.mime}; }
   reject(id:string) { return this.lock(async()=>{const item=this.item(id);if(item.status!=='pending')throw new Error('Image already reviewed');item.status='rejected';await this.save();return {rejected:true};}); }
+  markSaved(id: string, entryId: string) { return this.lock(async () => {
+    const item = this.state.items.find(i => i.id === id);
+    if (item) { item.status = 'approved'; item.entryId = entryId; await this.save(); }
+  }); }
   approve(id:string,packId:string,category:string) { return this.lock(async()=>{
     const item=this.item(id);if(item.status==='rejected')throw new Error('Image already rejected');
     if(item.entryId)return item.entryId;

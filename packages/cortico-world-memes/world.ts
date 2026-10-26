@@ -8,12 +8,16 @@ import type { ToolDef, World, WorldHost } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
 import type { WorldContext } from 'cortico/world.ts';
 import { memesConfigGroup, type MemesConfigSection } from './config.ts';
-import { MemeLibrary } from './server/library.ts';
+import { hash, MemeLibrary } from './server/library.ts';
 import { MemeSearch } from './server/search.ts';
 import { MemeSemantic, type Progress } from './server/semantic.ts';
 import { MemeCollection } from './server/collection.ts';
+import { SaveAccess } from './server/save-access.ts';
+import { createHash } from 'node:crypto';
 
 export const MEMES_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
+  { name: 'save_meme', tags: ['write'], description: 'Learn a received image as a meme ONLY when a currently speaking globally trusted QQ user explicitly asks to save/learn it. Pass the exact log: image handle, never a URL or invented handle. Saves directly without manual review, automatically captions and embeds it. Do not use for unsolicited collection. Report saved and ready separately; failures may leave a saved image needing indexing. Sends nothing.',
+    parameters: { type: 'object', properties: { image: { type: 'string', description: 'Exact log: handle of the received image in this conversation.' } }, required: ['image'] } },
   { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags, ids and an image reference; sends nothing. Pass the selected image reference unchanged to qq_send or console_send together with your reply text; they resolve the image automatically, so do not call get_meme first. Call at most once per reply.',
     parameters: { type: 'object', properties: { keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'A few short phrases describing your intended expression, attitude, action and recipient relationship. Reuse the current conversation; do not copy its history or persona.' } }, required: ['keywords'] } },
   { name: 'get_meme', tags: ['read'], description: 'Read a selected meme image. Use its blob handle with the current channel\'s image-capable sending tool. This tool does not send.',
@@ -25,6 +29,7 @@ export class MemesWorld implements World {
   readonly search: MemeSearch;
   readonly semantic: MemeSemantic;
   readonly collection: MemeCollection;
+  private saveAccess: SaveAccess;
   private collectionTimer?: ReturnType<typeof setInterval>;
   private collecting = false;
   private host?: WorldHost;
@@ -35,6 +40,7 @@ export class MemesWorld implements World {
   private jobAbort?: AbortController;
   private job: { state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; operation?: string; result?: unknown; error?: string; progress?: Progress } = { state: 'idle' };
   constructor(private ctx: WorldContext<MemesConfigSection>) {
+    this.saveAccess = new SaveAccess(() => ctx.globals?.().trustedQQ ?? []);
     this.library = new MemeLibrary(join(ctx.botDir, 'memes'));
     this.collection = new MemeCollection(join(ctx.botDir, 'memes', 'collection'), this.library, ctx.timezone,
       () => ({collectEnabled: ctx.cfg.memes.collectEnabled ?? true, collectDailyLimit: ctx.cfg.memes.collectDailyLimit ?? 20}));
@@ -51,7 +57,10 @@ export class MemesWorld implements World {
       if(this.collecting)return;this.collecting=true;
       void this.collection.scan().catch(error=>host.log.error('Meme collection failed',{error:String(error)})).finally(()=>{this.collecting=false;});
     },1000);this.collectionTimer.unref();
-    this.releaseHint = registerDeliveryHint(this.ctx.botDir, this.id, events => proactiveHint(this.ctx.cfg.memes, events, Math.random()));
+    this.releaseHint = registerDeliveryHint(this.ctx.botDir, this.id, events => {
+      this.saveAccess.deliver(events, host);
+      return proactiveHint(this.ctx.cfg.memes, events, Math.random());
+    });
     this.releaseImageSource = registerImageSource(this.ctx.botDir, 'meme', async id => {
       if (!this.ctx.cfg.memes.enabled || this.ctx.cfg.memes.maxMemes === 0) throw new Error('Meme feature is disabled');
       const pack = (await this.library.packs()).find(p => id.startsWith(p.id + ':'));
@@ -62,10 +71,44 @@ export class MemesWorld implements World {
       return { bytes, mime: entry.mime };
     });
   }
-  async stop() { clearInterval(this.collectionTimer); await this.collection.stop(); this.releaseHint?.(); this.releaseHint = undefined; this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
+  async stop() { this.saveAccess.clear(); clearInterval(this.collectionTimer); await this.collection.stop(); this.releaseHint?.(); this.releaseHint = undefined; this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
   tools(): ToolDef[] {
     return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');
+      if (decl.name === 'save_meme') {
+        if (!this.host) throw new Error('Meme world is not running');
+        const { bytes, mime } = this.saveAccess.image(args.image, context.role, this.host);
+        context.signal?.throwIfAborted();
+        let entryId: string | undefined;
+        this.launch('save_meme', async (jobSignal, progress) => {
+          const signal = AbortSignal.any([jobSignal, ...(context.signal ? [context.signal] : [])]);
+          const digest = createHash('sha256').update(bytes).digest('hex');
+          const existing = (await this.library.entries()).find(e => e.file.startsWith(`images/${digest}.`));
+          let packId = existing?.packId;
+          if (existing) entryId = existing.id;
+          else {
+            packId = (await this.library.packs()).find(p => p.name === '学习的表情')?.id ?? (await this.library.create('学习的表情')).id;
+            const pack = (await this.library.catalog()).find(p => p.id === packId)!;
+            if (!pack.categories.some(c => c.name === '已学习')) await this.library.edit({ kind: 'createCategory', packId,
+              revision: pack.revision, category: '已学习', description: '用户明确要求学习的表情' });
+            signal.throwIfAborted();
+            entryId = await this.library.addCollected(bytes, mime, packId, '已学习');
+          }
+          await this.collection.markSaved(digest, entryId!);
+          const described = await this.semantic.describe(packId!, 'missing', progress, signal, [entryId!], true);
+          if (described.failed) throw new Error('标注失败，请在语义化页面重试');
+          const savedPack = (await this.library.packs()).find(p => p.id === packId)!;
+          const savedImage = savedPack.images.find(i => `${packId}:${i.id}` === entryId)!;
+          if (!savedImage.caption.trim()) throw new Error('已保存，但缺少语义描述');
+          await this.library.applySemantic(entryId!, hash(JSON.stringify(savedImage)), { searchable: true });
+          await this.search.build(signal, { packId, force: false });
+          const entry = (await this.library.entries()).find(e => e.id === entryId)!;
+          const pack = (await this.library.packs()).find(p => p.id === packId)!;
+          return { saved: true, ready: entry.searchable && pack.enabled !== false, id: entryId, image: `meme:${entryId}`, duplicate: Boolean(existing) };
+        });
+        await this.pending;
+        return JSON.stringify(this.job.state === 'done' ? this.job.result : { saved: Boolean(entryId), ready: false, id: entryId, error: this.job.error ?? 'Cancelled' });
+      }
       if (decl.name === 'search_meme') {
         return JSON.stringify(await this.semantic.recall(args, AbortSignal.any([this.abort.signal, ...(context.signal ? [context.signal] : [])])));
       }
@@ -88,6 +131,7 @@ export class MemesWorld implements World {
     });
     return this.job;
   }
+  onTurnEnded() { this.saveAccess.clear(); }
   webUi(language: Language = 'zh') {
     const t = (zh: string, en: string) => language.startsWith('zh') ? zh : en;
     const override = join(this.ctx.botDir, 'prompts', 'MEMES.md');

@@ -59,11 +59,11 @@ export class FakeModelHub implements ModelHub {
   async transcribe(): Promise<string> { throw new Error('Unexpected transcription request'); }
   async speak(): Promise<{ bytes: Uint8Array; mime: string }> { throw new Error('Unexpected speech request'); }
 }
-export function world(dir: string, models: ModelHub = new FakeModelHub()) {
+export function world(dir: string, models: ModelHub = new FakeModelHub(), trustedQQ: string[] = []) {
   const cfg = structuredClone(MEMES_DEFAULTS);
   cfg.memes.embeddingModel = 'fixture/embedding'; cfg.memes.captionModel = 'fixture/caption';
   const instance = new MemesWorld({ id: 'memes', cfg, timezone: 'UTC', botName: 'fixture', botDir: dir, packageDir: dir,
-    dataDir: join(dir, 'data'), repoRoot: dir, models, secret: () => { throw new Error('Unexpected secret read'); }, storeSecret: () => { throw new Error('Unexpected secret write'); },
+    dataDir: join(dir, 'data'), repoRoot: dir, models, globals: () => ({ trustedQQ }), secret: () => { throw new Error('Unexpected secret read'); }, storeSecret: () => { throw new Error('Unexpected secret write'); },
     persist: () => { throw new Error('Unexpected configuration mutation'); }, restart: async () => {} });
   return { instance, cfg, models };
 }

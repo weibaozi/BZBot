@@ -5,6 +5,7 @@ export const MEMES: WorldDefinition<MemesConfigSection> = {
   id: 'memes', label: '表情包管理', defaults: () => structuredClone(MEMES_DEFAULTS),
   create: ctx => new MemesWorld(ctx),
   describe: { tools: describeTools(MEMES_TOOL_DECLS, {
+    save_meme: { zh: '按白名单用户明确要求直接学习图片，自动标注并生成向量。', en: 'Save a received image on an explicit trusted-user request, caption and embed it without review.' },
     search_meme: { zh: '根据关键词向量召回表情候选，由主模型结合当前对话选择。', en: 'Retrieve vector candidates for the conversation model to choose in context.' },
     get_meme: { zh: '读取选中的表情，交给当前渠道发送。', en: 'Read a selected meme for sending through the current channel.' },
   }), events: [] },

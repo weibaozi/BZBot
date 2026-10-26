@@ -1,5 +1,9 @@
 # `definition.ts` / `MemesWorld`
 
+## 0.7.1
+
+- 新增 save_meme：白名单用户明确要求学习图片时直接入库，自动标注和向量化，复用重复图片并同步审核队列。
+
 ## 0.7.0
 
 - ZIP 导入改为 PNG/JPG/JPEG 图片，不读取 AstrBot 元数据，既有数据保留。
