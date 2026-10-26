@@ -1,0 +1,141 @@
+--- a/src/web/client/shell/index.ts
++++ b/src/web/client/shell/index.ts
+@@ -8,7 +8,7 @@
+ import { buildHash, type Route, type Router } from '../core/router.ts';
+ import { featureAvailable, type FrameworkFeature } from '../features/feature.ts';
+ import { PROVIDER_ROUTE } from '../webui-pages/host.ts';
+-import { icon, wordmark, type WebUiIconName } from '../ui/icons.ts';
++import { icon, type WebUiIconName } from '../ui/icons.ts';
+ import { lampRow, paintLamps } from '../ui/lamp.ts';
+ import type { WebUi } from '../../shared/client-panel.ts';
+ import type { WebUiLamp, WebUiPageManifest } from '../../shared/webui-protocol.ts';
+@@ -16,7 +16,6 @@
+ import { S } from './strings.ts';
+ 
+ const DEFAULT_BRAND = 'bot';
+-const FRAMEWORK_NAME = 'Cortico';
+ 
+ const GROUP_PERSONAS = S.groupPersonas;
+ const GROUP_WORLDS = S.groupWorlds;
+@@ -117,13 +116,8 @@
+   const el = ui.h('div');
+   el.id = 'rail';
+ 
+-  // 左上角是框架字标。这个 bot 叫什么写在底栏头像旁边——那才是这一台的名字。
+   const brand = ui.h('div', 'brand');
+-  const mark = wordmark(doc);
+-  mark.removeAttribute('aria-hidden');
+-  mark.setAttribute('role', 'img');
+-  mark.setAttribute('aria-label', FRAMEWORK_NAME);
+-  brand.appendChild(mark);
++  brand.appendChild(ui.h('div', 'mybot-brand-title', '包子的bot中控'));
+ 
+   const nav = ui.h('nav', 'stack');
+   nav.setAttribute('aria-label', S.navAria);
+@@ -264,17 +258,6 @@
+ 
+   el.append(brand, nav, foot);
+ 
+-  get<{ currentVersion: string; update?: { version: string; url: string } }>('/api/framework/release', { signal })
+-    .then((status) => {
+-      if (signal.aborted || !status?.update) return;
+-      const hint = ui.h('a', 'release-hint', S.releaseUpdate(status.update.version, status.currentVersion));
+-      hint.href = status.update.url;
+-      hint.target = '_blank';
+-      hint.rel = 'noopener noreferrer';
+-      brand.appendChild(hint);
+-    })
+-    .catch(() => {});
+-
+   // ---- 导航 -------------------------------------------------------------
+ 
+   /** 某一页此刻该点哪盏灯。轮询的读数优先于 manifest 那一帧。 */
+--- a/src/web/public/styles.css
++++ b/src/web/public/styles.css
+@@ -2372,3 +2372,5 @@
+ .modalcard.model-hub-dialog-card{width:min(720px,92vw)}
+ .model-hub-dialog>.msgline:empty{display:none}
+ @media(max-width:760px){.model-hub-model{grid-template-columns:1fr}}
++
++.mybot-brand-title { font-size: 22px; font-weight: 700; line-height: 1.4; color: var(--foreground); overflow-wrap: anywhere; }
+--- a/tests/web/shell.test.ts
++++ b/tests/web/shell.test.ts
+@@ -532,7 +532,7 @@
+     expect(run.getAttribute('aria-label')).toBe('暂停运行');
+     click(run);
+     await flush();
+-    expect(seen).toEqual(['/api/framework/release', '/api/status', '/api/run/pause']);
++    expect(seen).toEqual(['/api/status', '/api/run/pause']);
+     expect(run.getAttribute('aria-label')).toBe('继续运行');
+   });
+ 
+@@ -735,14 +735,14 @@
+     expect(doc.title).toBe('WebUI · 示例');
+   });
+ 
+-  it('左上角是框架字标,不随 bot 改', async () => {
++  it('左上角显示产品中控标题，不随 bot 改', async () => {
+     stubStatus({ displayName: '示例' });
+     const { el } = await mkShell();
+     await flush();
+     const brand = el.find('brand')!;
+-    expect(brand.textContent).toBe('');
+-    expect(brand.children[0].tagName).toBe('svg');
+-    expect(brand.children[0].getAttribute('aria-label')).toBe('Cortico');
++    expect(brand.textContent).toBe('包子的bot中控');
++    expect(brand.children[0].textContent).toBe('包子的bot中控');
++    expect(brand.children[0].tagName).toBe('div');
+   });
+ 
+   it('拿不到 / 空串 → 留中性缺省，不报错卡', async () => {
+@@ -768,7 +768,7 @@
+ });
+ 
+ describe('连接状态', () => {
+-  it('外壳只请求实例状态和框架发布状态', async () => {
++  it('外壳只请求实例状态', async () => {
+     const seen: string[] = [];
+     vi.stubGlobal('fetch', (url: unknown) => {
+       seen.push(String(url));
+@@ -778,40 +778,7 @@
+     await flush();
+     shell.setRoute(route('provider', 'world:sample'));
+     await flush();
+-    expect(seen).toEqual(['/api/framework/release', '/api/status']);
+-  });
+-});
+-
+-describe('框架更新提示', () => {
+-  const answer = (release: unknown) => (url: unknown) => Promise.resolve({
+-    ok: true, status: 200,
+-    text: () => Promise.resolve(JSON.stringify(String(url) === '/api/framework/release' ? release : {})),
+-  });
+-
+-  it('有新版本时字标下出现带发布说明链接的提示', async () => {
+-    vi.stubGlobal('fetch', answer({
+-      currentVersion: '1.2.3',
+-      update: { version: '1.3.0', url: 'https://github.com/Pal-AI-Lab/Cortico/releases/tag/v1.3.0' },
+-    }));
+-    const { el } = await mkShell();
+-    await flush();
+-    const hint = el.find('brand')!.children.find((part) => part.tagName === 'a')!;
+-    expect(hint.textContent).toBe('Cortico 1.3.0 已发布(当前 1.2.3)');
+-    expect(hint.href).toBe('https://github.com/Pal-AI-Lab/Cortico/releases/tag/v1.3.0');
+-  });
+-
+-  it('没有新版本或检查失败时只有字标', async () => {
+-    vi.stubGlobal('fetch', answer({ currentVersion: '1.2.3' }));
+-    const current = await mkShell();
+-    await flush();
+-    expect(current.el.find('brand')!.children).toHaveLength(1);
+-
+-    vi.stubGlobal('fetch', (url: unknown) => Promise.resolve(String(url) === '/api/framework/release'
+-      ? { ok: false, status: 503, text: () => Promise.resolve('{"error":"unavailable"}') }
+-      : { ok: true, status: 200, text: () => Promise.resolve('{}') }));
+-    const failed = await mkShell();
+-    await flush();
+-    expect(failed.el.find('brand')!.children).toHaveLength(1);
++    expect(seen).toEqual(['/api/status']);
+   });
+ });
+ 

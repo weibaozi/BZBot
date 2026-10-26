@@ -5,9 +5,9 @@
       "privates": [],
       "vision": {
         "enabled": false,
-        "model": "bytedance-seed/seed-2.0-mini",
+        "model": "",
         "concurrency": 3,
-        "dedupPrecheckMs": 2500,
+        "dedupPrecheckMs": 1000,
         "maxImageBytes": 10485760,
         "timeoutMs": 60000
       },
@@ -36,8 +36,8 @@
           "cleanup": "",
           "intervalMethod": "random",
           "interval": [
-            0,
-            0.5
+            0.5,
+            1
           ],
           "logBase": 6
         }
@@ -45,23 +45,27 @@
       "groupReply": {
         "probability": 0,
         "recentMessages": 5,
-        "forceMention": true
+        "forceMention": true,
+        "sleepEnabled": true,
+        "sleepStart": "03:00",
+        "sleepEnd": "11:00"
       }
     },
     "memes": {
       "enabled": true,
       "memes": {
-        "embeddingProvider": "local-bge-m3",
         "queryPrefix": "",
         "enabled": true,
         "pythonFile": "python",
-        "embeddingModel": "local-bge-m3/bge-m3:latest",
+        "embeddingModel": "",
         "topK": 5,
         "minScore": 0.45,
-        "captionModel": "ChatGPT/gpt-6.1-sol",
+        "captionModel": "",
         "maxMemes": 1,
         "timeoutSeconds": 30,
-        "proactiveSearchPercent": 100
+        "proactiveSearchPercent": 100,
+        "collectEnabled": true,
+        "collectDailyLimit": 20
       }
     },
     "proactive": {
@@ -76,7 +80,8 @@
       "quietEnabled": true,
       "enabled": true,
       "quietStart": "3:00",
-      "quietEnd": "11:00"
+      "quietEnd": "11:00",
+      "contactGapHours": 1
     },
     "delegate": {
       "active": true,
@@ -106,8 +111,8 @@
       "requestTimeoutMs": 30000,
       "tabIdleMinutes": 15,
       "ownBrowser": true,
-      "ownBrowserExe": "C:/Program Files/Google/Chrome/Application/chrome.exe",
-      "ownBrowserHome": "{{DEPLOYMENT_DIR}}/browser-home",
+      "ownBrowserExe": "",
+      "ownBrowserHome": "browser-home",
       "ownBrowserPort": 9223,
       "bringToFront": true,
       "searchEngine": "bing",
@@ -131,41 +136,256 @@
         "baidu": {
           "enabled": false
         }
+      },
+      "video": {
+        "enabled": true,
+        "autoBringToFront": false,
+        "observe": {
+          "minIntervalSec": 15,
+          "frameDensity": 0.8,
+          "maxFrames": 9,
+          "cellWidth": 640,
+          "cellHeight": 360,
+          "captureFps": 2,
+          "ratio": 0.618,
+          "dedupeHamming": 6,
+          "cutThreshold": 40,
+          "blackLuma": 16,
+          "jpegQuality": 0.8
+        },
+        "danmaku": {
+          "enabled": true,
+          "maxPerScene": 12
+        },
+        "subtitle": {
+          "enabled": true
+        },
+        "browser": {
+          "uposHost": ""
+        },
+        "playback": {
+          "stallSec": 6
+        }
       }
     },
     "agenda": {
       "enabled": true,
-      "entries": []
+      "entries": [],
+      "maxEntries": 100,
+      "minIntervalMinutes": 5,
+      "maxNotes": 50
     },
     "skills": {
-      "enabled": true
+      "enabled": true,
+      "dir": ""
     },
     "websearch": {
-      "enabled": false
+      "enabled": false,
+      "country": "CN",
+      "searchLang": "zh-hans",
+      "uiLang": "zh-CN",
+      "safesearch": "moderate",
+      "timeoutMs": 20000
     },
     "webpro": {
-      "enabled": true
+      "enabled": true,
+      "maxResults": 8,
+      "maxChars": 3000,
+      "timeoutMs": 15000,
+      "searchTimeoutMs": 6000,
+      "engines": "anysearch,bing,sogou,so360",
+      "fallbackEngines": "firecrawl",
+      "allowThirdParty": true,
+      "freshnessDays": 30,
+      "domainCap": 2,
+      "cacheSearchTtlSec": 600,
+      "cachePageTtlSec": 1800,
+      "maxDownloadMB": 5,
+      "maxRedirects": 5,
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     },
     "policy": {
       "enabled": true
     },
     "images": {
       "enabled": true,
-      "model": "Codex/gpt-image-2.5-flare",
+      "model": "",
       "timeoutSeconds": 180
     },
     "visual": {
       "enabled": true,
       "savers": "",
       "consoleCanSave": true
+    },
+    "kb": {
+      "enabled": true,
+      "embeddingModel": "",
+      "groupOnlyParticipated": true,
+      "groupRetentionDays": 30,
+      "groupMinChars": 4,
+      "excludedGroups": "",
+      "gapMinutes": 30,
+      "maxMessages": 20,
+      "intervalMinutes": 5,
+      "minSimilarity": 0.45
+    },
+    "console": {
+      "pin": ""
+    },
+    "bilibili": {
+      "roomId": 0,
+      "sessdata": "",
+      "giftFlushYuan": 1,
+      "coalesceWindowMs": 300,
+      "coalesceMaxItems": 64,
+      "audienceOnlineRankOn": 200,
+      "audienceOnlineRankOff": 170,
+      "audienceReleaseHoldSec": 120,
+      "audienceSignalFreshSec": 90,
+      "audienceActiveStaleHoldSec": 300,
+      "audienceEventLineBudget": 114,
+      "audienceEventTokenBudget": 1061,
+      "audienceImportantShare": 0.5,
+      "overlay": {
+        "enabled": true,
+        "port": 7795,
+        "agentNoticeMaxChars": 200,
+        "maxQueuedVideos": 10
+      }
+    },
+    "minecraft": {
+      "serverMode": "auto",
+      "host": "127.0.0.1",
+      "port": 25565,
+      "username": "corti",
+      "version": "1.20.6",
+      "viewerPort": 7792,
+      "local": {
+        "serverDir": "",
+        "startWithWorld": false,
+        "javaPath": "",
+        "jvmArgs": "-Xms1G -Xmx2G",
+        "cheats": true
+      },
+      "world": {
+        "tickSec": 8,
+        "moveThreshold": 12,
+        "snapshotSec": 10,
+        "snapshotAnchorSec": 600
+      },
+      "precheck": true,
+      "priorOutcome": true,
+      "reflex": {
+        "fightBack": true,
+        "fleeHealth": 10,
+        "reactCooldownSec": 8,
+        "antiDrown": true,
+        "antiLava": true
+      },
+      "combat": {
+        "enabled": true,
+        "engageRadius": 3,
+        "chaseMax": 6,
+        "maxSec": 30,
+        "space": 2.6,
+        "busyRatio": 60,
+        "cooldownSec": 60
+      },
+      "show": {
+        "clickMs": 200,
+        "dwellOpenMs": 400,
+        "dwellResultMs": 600,
+        "dwellCloseMs": 300,
+        "reopenGapMs": 600,
+        "budgetMs": 6000
+      },
+      "client": {
+        "enabled": false,
+        "gameDir": "",
+        "versionId": "",
+        "javaPath": "",
+        "jvmArgs": "-Xmx4G",
+        "username": "CortiCam",
+        "width": 1280,
+        "height": 720,
+        "autoJoin": true,
+        "autoSpectate": true,
+        "resyncSec": 30,
+        "restartMax": 3,
+        "noPauseOnLostFocus": true,
+        "syncGui": true
+      },
+      "player": {
+        "enabled": false,
+        "username": "Player",
+        "gameDir": "",
+        "versionId": "",
+        "javaPath": "",
+        "jvmArgs": "-Xmx4G",
+        "width": 1280,
+        "height": 720,
+        "autoJoin": true,
+        "teleportToBot": true
+      }
     }
   },
-  "activeProvider": "glm/glm-5.3-flash",
+  "activeProvider": "",
   "batching": {
-    "quietGapMs": 800
+    "quietGapMs": 800,
+    "minBatchAgeMs": 0,
+    "maxBatchAgeMs": 15000,
+    "maxBatchSize": 100
   },
   "displayName": "包子",
   "globals": {
     "trustedQQ": ""
+  },
+  "context": {
+    "keepPastThinking": true,
+    "maxTokens": 128000,
+    "keepRatio": 0.3333,
+    "softRatio": 0.85,
+    "firstTurn": false
+  },
+  "logging": {
+    "file": "debug",
+    "stdout": "info",
+    "areas": ""
+  },
+  "usage": {
+    "rates": {
+      "CNY": 6.69,
+      "EUR": 0.892,
+      "JPY": 158.3,
+      "KRW": 1341,
+      "TWD": 31.9,
+      "BRL": 4.99,
+      "RUB": 85.4
+    }
+  },
+  "modelTimeouts": {
+    "totalSec": 120,
+    "firstContentSec": 60,
+    "idleSec": 60
+  },
+  "loop": {
+    "softCap": 8,
+    "hardCap": 16
+  },
+  "memo": {
+    "residentCap": 7,
+    "activeCap": 21
+  },
+  "tick": {
+    "dayIntervalMinutes": [
+      30,
+      60
+    ],
+    "nightIntervalMinutes": 120,
+    "nightStartHour": 0,
+    "nightEndHour": 8
+  },
+  "dream": {
+    "maxRounds": 40
   }
 }

@@ -1,0 +1,48 @@
+--- a/src/definition.ts
++++ b/src/definition.ts
+@@ -75,7 +75,7 @@
+   },
+ 
+   // `ctx.cfg` 是 `worlds.browser` 的活引用：热改的键现读即生效。
+-  create: (ctx) => new BrowserWorld({ cfg: ctx.cfg, timezone: ctx.timezone, secret: name => ctx.secret(name), storeSecret: (name, value) => ctx.storeSecret(name, value) }),
++  create: (ctx) => new BrowserWorld({ botDir: ctx.botDir, cfg: ctx.cfg, timezone: ctx.timezone, secret: name => ctx.secret(name), storeSecret: (name, value) => ctx.storeSecret(name, value) }),
+ 
+   // 自描述：可能出现的全部工具与会推出的全部事件，不进提示词。
+   // 两个工具**能不能用**按配置变（browser_focus 要有专属实例且 bringToFront 打开，
+--- a/src/world.ts
++++ b/src/world.ts
+@@ -11,6 +11,7 @@
+  * 「手现在不能用」，而不是这个 World 整个消失。连接是无状态的：断了对下一次工具调用重连即可。
+  */
+ import { fileURLToPath } from 'node:url';
++import { resolve } from 'node:path';
+ import type {
+   ToolCallContext,
+   ToolDef,
+@@ -118,6 +119,8 @@
+ }
+ 
+ export interface BrowserWorldOptions {
++  /** Relative browser profile paths resolve inside this deployment. */
++  botDir?: string;
+   /** `worlds.browser` 的活引用。 */
+   cfg: BrowserConfigSection;
+   timezone: string;
+@@ -433,7 +436,7 @@
+     this.own = cfg.ownBrowser
+       ? new OwnBrowser({
+           exePath: cfg.ownBrowserExe.trim(),
+-          home: cfg.ownBrowserHome.trim(),
++          home: resolve(opts.botDir ?? '.', cfg.ownBrowserHome.trim()),
+           cdpPort: cfg.ownBrowserPort,
+         })
+       : null;
+@@ -1292,7 +1295,7 @@
+         sort: str(args.sort) === 'visits' || str(args.sort) === 'recent' ? (str(args.sort) as 'recent' | 'visits') : undefined,
+       },
+       // 专属实例模式：查的是她自己那个 profile（Chrome 布局，在她的"家"下面）。
+-      { ownHome: this.own ? this.opts.cfg.ownBrowserHome.trim() : undefined },
++      { ownHome: this.own ? resolve(this.opts.botDir ?? '.', this.opts.cfg.ownBrowserHome.trim()) : undefined },
+       FIND_URL_TIMEOUT_MS,
+       ctx.signal,
+     );

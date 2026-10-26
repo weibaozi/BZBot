@@ -24,12 +24,17 @@ function Write-Utf8($path, $text) { [System.IO.File]::WriteAllText($path, $text,
 # $ErrorActionPreference does not cover native commands; stop on their exit codes too.
 function Check($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed with exit code $LASTEXITCODE" } }
 
-Step "Checking Node.js (>= 22) and git"
+Step "Checking Node.js (>= 22), git and Corepack"
 $nodeVersion = (node -v) -replace '^v', ''
 if ([int]($nodeVersion.Split('.')[0]) -lt 22) { throw "Node.js $nodeVersion is too old; install Node 22 or newer." }
-git --version | Out-Null
-corepack --version | Out-Null
+git --version | Out-Null; Check "git --version"
+corepack --version | Out-Null; Check "corepack --version"
 Write-Host "Node $nodeVersion OK"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Write-Warning "Python 3 is needed for meme ZIP import/export; install it to use that feature." }
+
+# Never overwrite bundles belonging to an active checkout.
+$running = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -and $_.CommandLine.Contains($cortico) -and $_.CommandLine -match 'launcher\.ts' }
+if ($running) { throw "A bot from $cortico is running. Stop it before setup rebuilds the WebUI." }
 
 Step "Fetching Cortico at $CorticoCommit"
 # A plain clone, not a submodule: inside a submodule Cortico resolves its repo root from
@@ -90,10 +95,11 @@ $ext = Join-Path $cortico "extensions"
 New-Item -ItemType Directory -Force (Join-Path $ext "patches") | Out-Null
 Copy-Item (Join-Path $root "deploy-template\extensions\package.json") $ext -Force
 Copy-Item (Join-Path $root "deploy-template\extensions\pnpm-workspace.yaml") $ext -Force
+Copy-Item (Join-Path $root "deploy-template\extensions\pnpm-lock.yaml") $ext -Force
 # Third-party extensions we changed: pnpm applies these patches on install (see patches\extensions\README.md).
 Copy-Item (Join-Path $root "patches\extensions\*.patch") (Join-Path $ext "patches") -Force
 Push-Location $ext
-corepack pnpm install; Check "pnpm install in extensions"
+corepack pnpm install --frozen-lockfile; Check "pnpm install in extensions"
 Pop-Location
 
 Step "Creating deployment '$BotName' from deploy-template"
