@@ -151,7 +151,7 @@ export class MemeLibrary {
     const pending = this.editing.then(run); this.editing = pending.catch(() => {}); return pending;
   }
   async importZip(path: string, python: string, signal?: AbortSignal): Promise<{ id: string; images: number; searchable: number }> {
-    if (!path.toLowerCase().endsWith('.zip')) throw new Error('Select an AstrBot ZIP export');
+    if (!path.toLowerCase().endsWith('.zip')) throw new Error('Select a ZIP containing PNG or JPEG images');
     await mkdir(join(this.dir, 'packs'), { recursive: true });
     const id = randomUUID();
     const stage = join(this.dir, `.import-${id}`);
@@ -169,6 +169,31 @@ export class MemeLibrary {
     if (!/^images\/[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/.test(entry.file)) throw new Error('Invalid stored image path');
     const bytes = await readFile(join(this.dir, 'packs', entry.packId, entry.file));
     return { entry, bytes };
+  }
+  async hasDigest(digest: string) {
+    return (await this.packs()).some(p => p.images.some(i => i.file.split('/').pop()?.split('.')[0] === digest));
+  }
+  async addCollected(bytes: Buffer, mime: string, packId: string, category: string): Promise<string> {
+    const run = async () => {
+      const found = (await this.packs()).find(p => p.id === packId);
+      if (!found) throw new Error('Select a destination pack');
+      const { id, ...pack } = found;
+      if (!Object.hasOwn(pack.categories ?? {}, category)) throw new Error('Select a destination category');
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const existing = pack.images.find(i => i.file.startsWith(`images/${digest}.`) && !i.deletedAt);
+      if (existing) return `${id}:${existing.id}`;
+      const ext = mime === 'image/png' ? 'png' : mime === 'image/jpeg' ? 'jpg' : mime === 'image/gif' ? 'gif' : 'webp';
+      const image: Meme = { id: randomUUID(), file: `images/${digest}.${ext}`, mime, category,
+        categoryDescription: pack.categories![category], caption: '', tags: [], visibleText: '', searchable: false, reviewed: true };
+      await mkdir(join(this.dir, 'packs', id, 'images'), { recursive: true });
+      await writeFile(join(this.dir, 'packs', id, image.file), bytes);
+      pack.images.push(image);
+      const destination = join(this.dir, 'packs', id, 'pack.json'), temporary = destination + '.' + randomUUID();
+      try { await writeFile(temporary, JSON.stringify(pack)); await rename(temporary, destination); }
+      finally { await rm(temporary, { force: true }); }
+      return `${id}:${image.id}`;
+    };
+    const pending = this.editing.then(run); this.editing = pending.catch(() => {}); return pending;
   }
   async saveIndex(value: unknown): Promise<void> {
     const tmp = join(this.dir, `.index-${randomUUID()}.json`);

@@ -1,5 +1,11 @@
 # `definition.ts` / `MemesWorld`
 
+## 0.7.0
+
+- ZIP 导入改为 PNG/JPG/JPEG 图片，不读取 AstrBot 元数据，既有数据保留。
+- 新增收集待审核，按本地日期每天最多 20 张，可调整上限；去重图片不占额度。
+- 人工通过后自动标注和向量化，失败可重试，拒绝的重复图片不再收集。
+
 ## 0.6.1
 
 - Require one meme search before replying when the random reminder fires; choose whether to send an image after reviewing candidates, and reuse candidates already retrieved in the turn.

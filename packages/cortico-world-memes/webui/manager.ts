@@ -35,6 +35,10 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
   const packRow = h('div', '', 'manage-pack-switch-row'); const usePack = h('input'); usePack.type = 'checkbox';
   const useLabel = h('label', '用于对话选图'); useLabel.prepend(usePack); packRow.append(h('label', '当前管理包'), packSelect, useLabel);
   const managerActions = h('div', '', 'port-actions');
+  const reviewPanel = h('section'); const reviewHeader=h('div','','port-actions'); const reviewGrid=h('div','','port-grid');
+  const reviewPack=h('select'), reviewCategory=h('select');reviewPack.setAttribute('aria-label','审核通过后加入的表情包');reviewCategory.setAttribute('aria-label','审核通过后加入的分类');
+  const reviewCount=h('p');reviewHeader.append(h('span','加入到'),reviewPack,reviewCategory,button('刷新待审核',async()=>loadReview()));
+  reviewPanel.append(reviewHeader,reviewCount,reviewGrid);
   const semantic = h('section', '', 'port-semantic'); const stats = h('div', '', 'port-stats');
   const progressText = h('p'); const progress = h('progress'); progress.max = 1; progress.value = 0;
   const failures = h('details'); failures.append(h('summary', '任务详情')); const failureList = h('pre'); failures.append(failureList);
@@ -56,12 +60,37 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
     testOutput.textContent = '正在召回候选…';
     try { testOutput.textContent = JSON.stringify(await ctx.invoke('search', [{ keywords: testReply.input.value.split(/[,，、\n]+/).map(word => word.trim()).filter(Boolean) }]), null, 2); } catch (e) { testOutput.textContent = String(e); }
   }), h('p', '此处只测试候选召回；最终选图由主模型在实际对话中完成。', 'hint'), testOutput); semantic.append(testArea);
-  app.append(header, tabs, report, packRow, managerActions, semantic, layout, settingsPanel);
+  app.append(header, tabs, report, packRow, managerActions, semantic, layout, settingsPanel,reviewPanel);
 
   let packs: Pack[] = []; let packId = ''; let category = ''; let offset = 0; let trash = false; let tab = 'manage';
   let dirtySettings = false; let dirtyEditor = false; let previousJob = ''; let entries: Entry[] = []; const selected = new Set<string>();
   let generation = 0; let request = 0; let urls: string[] = []; let observer: IntersectionObserver | undefined;
   let tasks: Array<() => Promise<void>> = []; let workers = 0;
+  let reviewUrls:string[]=[];let reviewOffset=0;let reviewVersion=0;
+  signal.addEventListener('abort',()=>reviewUrls.forEach(URL.revokeObjectURL),{once:true});
+  function reviewCategories(){reviewCategory.replaceChildren(...(packs.find(p=>p.id===reviewPack.value)?.categories??[]).map(c=>{const o=h('option',c.name);o.value=c.name;return o;}));}
+  reviewPack.addEventListener('change',reviewCategories,{signal});
+  async function loadReview(){
+    const version=++reviewVersion;
+    const data=await ctx.invoke<{items:Array<{id:string;at:string;source:string}>;today:number;limit:number}>('collection');
+    if(signal.aborted||version!==reviewVersion)return;
+    reviewUrls.forEach(URL.revokeObjectURL);reviewUrls=[];reviewGrid.replaceChildren();
+    const selectedPack=reviewPack.value;reviewPack.replaceChildren(...packs.map(p=>{const o=h('option',p.name);o.value=p.id;return o;}));
+    if(packs.some(p=>p.id===selectedPack))reviewPack.value=selectedPack;reviewCategories();
+    reviewCount.textContent=`待审核 ${data.items.length} 张 · 今日已收集 ${data.today}/${data.limit} 张。通过后自动标注并生成向量；拒绝的相同图片不再收集。`;
+    if(reviewOffset>=data.items.length)reviewOffset=0;
+    for(const item of data.items.slice(reviewOffset,reviewOffset+24)){
+      const card=h('article','','port-review-card');const image=h('img');image.alt='待审核图片';image.style.cssText='width:100%;height:180px;object-fit:contain';
+      card.append(image,h('p',`${item.source} · ${new Date(item.at).toLocaleString()}`),button('通过并入库',async()=>{
+        if(!reviewPack.value||!reviewCategory.value)throw new Error('请先创建表情包及分类，并选择审核目标');
+        await job('approveCollection',{id:item.id,packId:reviewPack.value,category:reviewCategory.value});report.textContent='已开始入库、标注和向量生成，可在语义化查看任务进度。';
+      },'primary'),button('拒绝',async()=>{await ctx.invoke('rejectCollection',[{id:item.id}]);await loadReview();}));reviewGrid.append(card);
+      try{const blob=await ctx.invokeBinary('collectionImage',[{id:item.id}]);if(signal.aborted||version!==reviewVersion)return;const url=URL.createObjectURL(blob);reviewUrls.push(url);image.src=url;}catch{image.alt='图片加载失败';}
+    }
+    const prev=button('上一页',async()=>{reviewOffset=Math.max(0,reviewOffset-24);await loadReview();});prev.disabled=reviewOffset===0;
+    const next=button('下一页',async()=>{reviewOffset+=24;await loadReview();});next.disabled=reviewOffset+24>=data.items.length;
+    reviewGrid.append(prev,next);
+  }
   const current = () => { const p = packs.find(p => p.id === packId); if (!p) throw new Error('请先创建或导入表情包'); return p; };
   ctx.guardLeave(() => dirtySettings || dirtyEditor ? '有尚未保存的修改，确定离开？' : null);
   const clearImages = () => { generation++; observer?.disconnect(); tasks = []; urls.forEach(URL.revokeObjectURL); urls = []; grid.replaceChildren(); };
@@ -163,7 +192,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
     failureList.textContent = p?.errors.map(e => `${e.id}: ${e.error}`).join('\n') || '无失败记录';
     semanticActions.querySelectorAll<HTMLButtonElement>('button[data-job]').forEach(b => { b.disabled = state.job.state === 'running'; });
     if (state.job.error) report.textContent = state.job.error;
-    if (previousJob === 'running' && state.job.state !== 'running') { await reload(); if (state.job.result?.path) report.textContent = `已导出：${state.job.result.path}`; } previousJob = state.job.state;
+    if (previousJob === 'running' && state.job.state !== 'running') { await reload(); if(tab==='review')await loadReview(); if (state.job.result?.path) report.textContent = `已导出：${state.job.result.path}`; } previousJob = state.job.state;
   }
   async function job(method: string, args: Record<string, unknown>) { await ctx.invoke(method, [args]); previousJob = 'running'; await refreshJob(); }
   for (const [label, method, args] of [ ['补全语义描述', 'semantic', { mode: 'missing' }], ['一键完整语义化', 'semantic', { mode: 'missing', vectors: true }], ['重试失败项', 'semantic', { mode: 'retry' }], ['仅补生成向量', 'build', {}], ['重建全部向量', 'build', { force: true }] ] as Array<[string, string, Record<string, unknown>]>) {
@@ -174,7 +203,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
   const upload = h('input'); upload.type = 'file'; upload.accept = 'image/png,image/jpeg,image/gif,image/webp'; upload.multiple = true; upload.hidden = true;
   managerActions.append(button('新建表情包', async () => { modal('新建表情包', (body, close) => { const name = field('名称'); body.append(name.wrapper, button('创建', async () => { const result = await ctx.invoke<{ id: string }>('create', [{ name: name.input.value }]); packId = result.id; close(); await reload(); })); }); }), button('包设置', renamePack), button('新建分类', async () => categoryEditor(true)),
     button('上传图片', async () => { if (!category || trash) throw new Error('请先选择一个目标分类'); upload.click(); }), upload,
-    button('导入 AstrBot ZIP', async () => { const path = await ctx.pickPath({ kind: 'file', extensions: ['zip'] }); if (path) await job('import', { path }); }),
+    button('导入图片 ZIP', async () => { const path = await ctx.pickPath({ kind: 'file', extensions: ['zip'] }); if (path) await job('import', { path }); }),
     button('导出当前包', async () => { current(); const directory = await ctx.pickPath({ kind: 'directory', title: '导出表情包到目录' }); if (directory) await job('export', { packId, directory }); }));
   upload.addEventListener('change', () => { const files = Array.from(upload.files ?? []); upload.value = ''; const target = { packId, category }; void run(async () => {
     let done = 0; const errors: string[] = []; for (const file of files) { if (signal.aborted) return;
@@ -195,7 +224,7 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
 
   async function loadSettings() {
     const settings = await ctx.invoke<Settings>('settings'); settingsBody.replaceChildren(); workflow.replaceChildren(); const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
-    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes', 'proactiveSearchPercent']], ['语义检索', ['embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['captionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
+    const groups: Array<[string, string[]]> = [['配图控制', ['enabled', 'maxMemes', 'proactiveSearchPercent']], ['图片收集', ['collectEnabled','collectDailyLimit']], ['语义检索', ['embeddingModel', 'queryPrefix', 'topK', 'minScore']], ['视觉标注', ['captionModel', 'timeoutSeconds']], ['导入导出', ['pythonFile']]];
     for (const [title, keys] of groups) {
       const section = h('section', '', 'port-settings-group'); section.append(h('h3', title)); workflow.append(button(title, async () => { section.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 'ghost'));
       for (const key of keys) {
@@ -239,9 +268,9 @@ export default { panels: { memes: { async mount(ctx: WebUiPanelContext) {
     }, 'primary'), button('重新读取设置', async () => { if (dirtySettings) await confirmAction('放弃未保存设置', '重新读取已保存的配置。', async () => { dirtySettings = false; await loadSettings(); }); else await loadSettings(); }));
   }
   async function showTab(name: string) {
-    tab = name; managerActions.hidden = tab !== 'manage'; semantic.hidden = tab !== 'semantic'; layout.hidden = tab === 'settings'; packRow.hidden = tab === 'settings'; settingsPanel.hidden = tab !== 'settings';
+    tab = name; managerActions.hidden = tab !== 'manage'; semantic.hidden = tab !== 'semantic'; layout.hidden = tab === 'settings'||tab==='review'; packRow.hidden = tab === 'settings'||tab==='review'; settingsPanel.hidden = tab !== 'settings';reviewPanel.hidden=tab!=='review';if(tab==='review')await loadReview();
     tabs.querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.setAttribute('aria-pressed', String(b.dataset.tab === tab)); }); if (tab === 'settings' && !settingsBody.childElementCount) await loadSettings();
   }
-  for (const [id, label] of [['manage', '表情包管理'], ['semantic', '语义化'], ['settings', '设置中心']]) { const b = button(label, async () => showTab(id)); b.dataset.tab = id; tabs.append(b); }
+  for (const [id, label] of [['manage', '表情包管理'], ['review','收集待审核'], ['semantic', '语义化'], ['settings', '设置中心']]) { const b = button(label, async () => showTab(id)); b.dataset.tab = id; tabs.append(b); }
   await showTab('manage'); await reload(); await refreshJob(); ctx.interval(() => { void run(refreshJob); }, 2500);
 } } } };

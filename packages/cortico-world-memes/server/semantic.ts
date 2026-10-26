@@ -11,11 +11,11 @@ export class MemeSemantic {
     private config: () => MemesConfigSection['memes'], private models: ModelHub,
     private reportUsage: WorldHost['reportUsage']) {}
 
-  async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal) {
+  async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal, ids?: string[]) {
     const packs = await this.library.packs();
     if (!packs.some(p => p.id === packId)) throw new Error('Select a pack');
     const pack = packs.find(p => p.id === packId)!;
-    const pending = pack.images.filter(i => !i.deletedAt && !i.manual && (mode === 'force' || (mode === 'retry' ? Boolean(i.semanticError) : !i.caption.trim())));
+    const pending = pack.images.filter(i => (!ids || ids.includes(`${pack.id}:${i.id}`)) && !i.deletedAt && !i.manual && (mode === 'force' || (mode === 'retry' ? Boolean(i.semanticError) : !i.caption.trim())));
     Object.assign(progress, { stage: '生成语义描述', done: 0, total: pending.length });
     for (const image of pending) {
       signal.throwIfAborted();

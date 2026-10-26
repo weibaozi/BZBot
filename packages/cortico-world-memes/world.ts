@@ -11,6 +11,7 @@ import { memesConfigGroup, type MemesConfigSection } from './config.ts';
 import { MemeLibrary } from './server/library.ts';
 import { MemeSearch } from './server/search.ts';
 import { MemeSemantic, type Progress } from './server/semantic.ts';
+import { MemeCollection } from './server/collection.ts';
 
 export const MEMES_TOOL_DECLS: Array<Omit<ToolDef, 'handler'>> = [
   { name: 'search_meme', tags: ['read'], description: 'Retrieve meme candidates by vector similarity for your keywords. Use the current conversation and persona to choose one candidate or none after reading the result; scores measure similarity, not suitability. Returns descriptions, tags, ids and an image reference; sends nothing. Pass the selected image reference unchanged to qq_send or console_send together with your reply text; they resolve the image automatically, so do not call get_meme first. Call at most once per reply.',
@@ -23,6 +24,9 @@ export class MemesWorld implements World {
   readonly library: MemeLibrary;
   readonly search: MemeSearch;
   readonly semantic: MemeSemantic;
+  readonly collection: MemeCollection;
+  private collectionTimer?: ReturnType<typeof setInterval>;
+  private collecting = false;
   private host?: WorldHost;
   private releaseImageSource?: () => void;
   private releaseHint?: () => void;
@@ -32,6 +36,8 @@ export class MemesWorld implements World {
   private job: { state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; operation?: string; result?: unknown; error?: string; progress?: Progress } = { state: 'idle' };
   constructor(private ctx: WorldContext<MemesConfigSection>) {
     this.library = new MemeLibrary(join(ctx.botDir, 'memes'));
+    this.collection = new MemeCollection(join(ctx.botDir, 'memes', 'collection'), this.library, ctx.timezone,
+      () => ({collectEnabled: ctx.cfg.memes.collectEnabled ?? true, collectDailyLimit: ctx.cfg.memes.collectDailyLimit ?? 20}));
     this.search = new MemeSearch(this.library, () => ({ model: ctx.cfg.memes.embeddingModel,
       queryPrefix: ctx.cfg.memes.queryPrefix }), ctx.models);
     this.semantic = new MemeSemantic(this.library, this.search, () => ctx.cfg.memes, ctx.models,
@@ -40,6 +46,11 @@ export class MemesWorld implements World {
   envPromptVars() { return this.ctx.cfg.memes.enabled ? {} : null; }
   async start(host: WorldHost) {
     this.host = host; this.abort = new AbortController();
+    await this.collection.start(host);
+    this.collectionTimer = setInterval(() => {
+      if(this.collecting)return;this.collecting=true;
+      void this.collection.scan().catch(error=>host.log.error('Meme collection failed',{error:String(error)})).finally(()=>{this.collecting=false;});
+    },1000);this.collectionTimer.unref();
     this.releaseHint = registerDeliveryHint(this.ctx.botDir, this.id, events => proactiveHint(this.ctx.cfg.memes, events, Math.random()));
     this.releaseImageSource = registerImageSource(this.ctx.botDir, 'meme', async id => {
       if (!this.ctx.cfg.memes.enabled || this.ctx.cfg.memes.maxMemes === 0) throw new Error('Meme feature is disabled');
@@ -51,7 +62,7 @@ export class MemesWorld implements World {
       return { bytes, mime: entry.mime };
     });
   }
-  async stop() { this.releaseHint?.(); this.releaseHint = undefined; this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
+  async stop() { clearInterval(this.collectionTimer); await this.collection.stop(); this.releaseHint?.(); this.releaseHint = undefined; this.releaseImageSource?.(); this.releaseImageSource = undefined; this.abort.abort(); await this.pending; this.host = undefined; }
   tools(): ToolDef[] {
     return MEMES_TOOL_DECLS.map(decl => ({ ...decl, handler: async (args, context) => {
       if (!this.ctx.cfg.memes.enabled) throw new Error('Meme feature is disabled');
@@ -88,6 +99,22 @@ export class MemesWorld implements World {
       invoke: async (panel: string, method: string, args: unknown[]) => {
         if (panel !== 'memes') throw new Error('Unknown panel');
         const arg = (args[0] ?? {}) as Record<string, unknown>;
+        if(method==='collection') return this.collection.list();
+        if(method==='collectionImage') {
+          if(typeof arg.id!=='string')throw new Error('Image id required');
+          const image=await this.collection.image(arg.id);return {$binary:{mime:image.mime,base64:image.bytes.toString('base64')}};
+        }
+        if(method==='rejectCollection') { if(typeof arg.id!=='string')throw new Error('Image id required');return this.collection.reject(arg.id); }
+        if(method==='approveCollection') {
+          if(typeof arg.id!=='string'||typeof arg.packId!=='string'||typeof arg.category!=='string')throw new Error('Image, pack and category required');
+          const {id,packId,category}=arg;
+          return this.launch('approve',async(signal,progress)=>{
+            const entryId=await this.collection.approve(id,packId,category);
+            const described=await this.semantic.describe(packId,'missing',progress,signal,[entryId]);
+            if(described.failed)throw new Error('已入库，但标注失败；请在语义化页面重试失败项并补生成向量');
+            await this.search.build(signal,{packId,force:false});return {entryId};
+          });
+        }
         if (method === 'state') {
           const packs = await this.library.packs();
           return { packs: packs.map(p => ({ id: p.id, name: p.name, images: p.images.length, searchable: p.images.filter(i => i.searchable).length })),

@@ -1,0 +1,50 @@
+import { expect, it } from 'vitest';
+import { createServer } from 'node:http';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { assembleBot } from '../../../vendor/cortico/bots/corti-soulmate/assemble.ts';
+import { MockOneBot } from '../../../vendor/cortico/tests/helpers/mock-onebot.ts';
+import { FakeLLM, makeCfg, makeLoaded, makeTmpDir } from '../../../vendor/cortico/tests/core/helpers.ts';
+import { world, PNG, FakeModelHub } from './helpers.ts';
+
+it('collects real QQ image blobs once, enforces a persistent daily cap, and only embeds after approval',async()=>{
+ const tmp=makeTmpDir(),onebot=new MockOneBot({port:0,groupId:424242,selfId:5000});
+ const server=createServer((req,res)=>{res.setHeader('Content-Type','image/png');res.end(req.url==='/one'?PNG:Buffer.concat([PNG,Buffer.from(req.url!)]));});
+ await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const address=server.address();if(!address||typeof address==='string')throw new Error('No address');
+ const port=await onebot.start(),cfg=makeCfg();
+ cfg.worlds.qq={...cfg.worlds.qq,enabled:true,wsUrl:`ws://127.0.0.1:${port}`,groups:[{id:424242,enabled:true}],privates:[]};
+ cfg.worlds.qq.groupReply={probability:0,recentMessages:5,forceMention:false,sleepEnabled:false};
+ cfg.worlds.console.enabled=false;cfg.web.port=0;cfg.tick.dayIntervalMinutes=[999,999];cfg.tick.nightIntervalMinutes=null;
+ for(const provider of Object.values(cfg.providers))provider.multimodal=true;
+ const memoryDir=join(tmp.dir,'memory');mkdirSync(memoryDir);writeFileSync(join(memoryDir,'CONSTITUTION.md'),'Fixture');
+ const bot=assembleBot(makeLoaded({config:cfg,rootDir:tmp.dir,memoryDir,dataDir:join(tmp.dir,'data')}),{llm:new FakeLLM()});
+ const models=new FakeModelHub(async()=>({caption:'开心庆祝',tags:['开心'],visible_text:'',needs_review:false}));
+ const {instance,cfg:settings}=world(tmp.dir,models);settings.memes.collectDailyLimit=1;
+ const invoke=(method:string,arg:Record<string,unknown>={})=>instance.webUi().invoke('memes',method,[arg]);
+ try{
+  await bot.start();await bot.qqWorld!.waitReady(5000);await bot.core.mountWorld(instance);
+  const emit=async(path:string)=>{const id=onebot.emitGroupMessage({user_id:10001,segments:[{type:'image',data:{url:`http://127.0.0.1:${address.port}${path}`}}]});
+   await expect.poll(()=>bot.core.store.range({source:'qq'}).some(e=>e.meta?.message_id===id&&e.blobs?.length)).toBe(true);await instance.collection.scan();};
+  await emit('/one');await emit('/one');await emit('/two');
+  const pending=await instance.collection.list();expect(pending.items).toHaveLength(1);expect(pending.today).toBe(1);
+  expect(await instance.library.entries()).toHaveLength(0);expect(models.chatCalls).toHaveLength(0);expect(models.embedCalls).toHaveLength(0);
+  const {id:packId}=await instance.library.create('Reviewed');const pack=(await instance.library.catalog())[0];
+  await instance.library.edit({kind:'createCategory',packId,revision:pack.revision,category:'happy',description:'开心'});
+  await invoke('approveCollection',{id:pending.items[0].id,packId,category:'happy'});
+  await expect.poll(async()=>((await invoke('state')) as any).job.state,{timeout:5000}).toBe('done');
+  expect((await instance.library.entries())[0]).toMatchObject({caption:'开心庆祝',searchable:true,reviewed:true});
+  expect((await instance.search.state()).valid).toBe(1);expect(models.chatCalls).toHaveLength(1);
+  await bot.core.unmountWorld('memes');await bot.core.mountWorld(instance);
+  expect((await instance.collection.list()).today).toBe(1);settings.memes.collectDailyLimit=2;
+  await emit('/one');expect((await instance.collection.list()).today).toBe(1);
+  await emit('/two');const second=(await instance.collection.list()).items[0];await invoke('rejectCollection',{id:second.id});
+  settings.memes.collectDailyLimit=3;await emit('/two');expect((await instance.collection.list()).items).toHaveLength(0);expect((await instance.collection.list()).today).toBe(2);
+  settings.memes.collectEnabled=false;await emit('/disabled');expect((await instance.collection.list()).today).toBe(2);
+  settings.memes.collectEnabled=true;settings.memes.collectDailyLimit=0;await emit('/zero');expect((await instance.collection.list()).today).toBe(2);
+  await bot.core.unmountWorld('memes');
+  const statePath=join(tmp.dir,'memes','collection','state.json'),state=JSON.parse(readFileSync(statePath,'utf8'));state.day='2000-01-01';writeFileSync(statePath,JSON.stringify(state));
+  settings.memes.collectDailyLimit=1;await bot.core.mountWorld(instance);await emit('/three');
+  expect((await instance.collection.list()).today).toBe(1);expect((await instance.collection.list()).items).toHaveLength(1);
+ }finally{await bot.stop();await onebot.close();await new Promise<void>(resolve=>server.close(()=>resolve()));tmp.cleanup();}
+},20000);

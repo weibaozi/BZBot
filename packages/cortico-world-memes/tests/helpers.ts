@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import type { MemeLibrary } from '../server/library.ts';
 import { MEMES_DEFAULTS } from '../config.ts';
 import { MemesWorld } from '../world.ts';
 import type { ModelHub, ModelInfo, ChatOptions } from 'cortico/providers/model-hub.ts';
@@ -9,17 +11,21 @@ import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { responseRequest } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { FakeLLM, textReply } from '../../../vendor/cortico/tests/core/helpers.ts';
 export const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6SAAAAABJRU5ErkJggg==', 'base64');
-export async function archive(dir: string, extras: Record<string, string> = {}) {
-  const files: Record<string, string> = {
-    'manifest.json': JSON.stringify({ id: 'fixture', name: 'Fixture pack', categories: { affection: { description: '安慰' }, happy: { description: '高兴' } } }),
-    'semantic_metadata.json': JSON.stringify({ schema_version: '2.0', images: {
-      a: { relative_path: 'memes/affection/a.png', category: 'affection', caption: '给对方一个抱抱', tags: ['安慰', '拥抱'], visible_text: '抱抱' },
-      b: { relative_path: 'memes/happy/b.png', category: 'happy', caption: '开心庆祝', tags: ['开心'], visible_text: '耶' },
-    } }), ...extras,
-  };
-  const manifest = join(dir, 'fixture-files.json'); await writeFile(manifest, JSON.stringify(files));
+export async function seed(library: MemeLibrary) {
+  const {id}=await library.create('Fixture pack');
+  const digest=createHash('sha256').update(PNG).digest('hex');
+  const dir=join(library.dir,'packs',id);await mkdir(join(dir,'images'));
+  await writeFile(join(dir,'images',digest+'.png'),PNG);
+  await writeFile(join(dir,'pack.json'),JSON.stringify({name:'Fixture pack',sourceId:'fixture',license:'',author:'',enabled:true,categories:{affection:'安慰',happy:'高兴'},images:[
+    {id:'a',file:`images/${digest}.png`,mime:'image/png',category:'affection',categoryDescription:'安慰',caption:'给对方一个抱抱',tags:['安慰','拥抱'],visibleText:'抱抱',searchable:true},
+    {id:'b',file:`images/${digest}.png`,mime:'image/png',category:'happy',categoryDescription:'高兴',caption:'开心庆祝',tags:['开心'],visibleText:'耶',searchable:true},
+  ]}));return {id};
+}
+export async function archive(dir: string, extras: Record<string, string> = {}, images: Record<string, Buffer> = {'one/a.png':PNG,'two/b.png':PNG}) {
+  const manifest = join(dir, 'fixture-files.json');
+  await writeFile(manifest, JSON.stringify({extras,images:Object.fromEntries(Object.entries(images).map(([name,bytes])=>[name,bytes.toString('base64')]))}));
   const path = join(dir, 'pack.zip');
-  await promisify(execFile)('python', ['-c', 'import zipfile,json,sys,base64; z=zipfile.ZipFile(sys.argv[1],"w"); d=json.load(open(sys.argv[2],encoding="utf-8")); [z.writestr(k,v) for k,v in d.items()]; [z.writestr(k,base64.b64decode(sys.argv[3])) for k in ["memes/affection/a.png","memes/happy/b.png"]]; z.close()', path, manifest, PNG.toString('base64')], { windowsHide: true });
+  await promisify(execFile)('python', ['-c', 'import zipfile,json,sys,base64; z=zipfile.ZipFile(sys.argv[1],"w"); d=json.load(open(sys.argv[2],encoding="utf-8")); [z.writestr(k,v) for k,v in d["extras"].items()]; [z.writestr(k,base64.b64decode(v)) for k,v in d["images"].items()]; z.close()', path, manifest], { windowsHide: true });
   return path;
 }
 export class FakeModelHub implements ModelHub {

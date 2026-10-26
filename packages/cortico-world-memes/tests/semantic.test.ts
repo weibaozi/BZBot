@@ -2,12 +2,12 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archive, PNG, world, FakeModelHub } from './helpers.ts';
+import { seed, archive, PNG, world, FakeModelHub } from './helpers.ts';
 import type { Progress } from '../server/semantic.ts';
 const dirs: string[] = [];
 async function setup(models = new FakeModelHub()) {
   const dir = await mkdtemp(join(tmpdir(), 'meme-semantic-')); dirs.push(dir); const state = world(dir, models);
-  const imported = await state.instance.library.importZip(await archive(dir), 'python');
+  const imported = await seed(state.instance.library);
   const edit = async (change: Record<string, unknown>) => { const p = (await state.instance.library.catalog())[0]; return state.instance.library.edit({ ...change, packId: p.id, revision: p.revision }); };
   return { ...state, dir, packId: imported.id, edit };
 }

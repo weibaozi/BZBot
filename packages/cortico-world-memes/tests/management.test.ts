@@ -2,21 +2,21 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archive, PNG, world } from './helpers.ts';
+import { seed, archive, PNG, world } from './helpers.ts';
 import { MemeLibrary } from '../server/library.ts';
 const dirs: string[] = [];
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), 'meme-management-')); dirs.push(dir); const { instance, cfg } = world(dir);
-  const imported = await instance.library.importZip(await archive(dir), 'python');
+  const imported = await seed(instance.library);
   const edit = async (change: Record<string, unknown>) => { const p = (await instance.library.catalog()).find(p => p.id === imported.id)!; return instance.library.edit({ ...change, packId: p.id, revision: p.revision }); };
   return { dir, instance, cfg, edit, packId: imported.id };
 }
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
-it('a newly created empty pack round-trips without inventing an image', async () => {
+it('rejects importing an empty ZIP without inventing an image', async () => {
   const { instance, dir } = await setup(); const created = await instance.library.create('Empty');
   const exported = await instance.library.exportZip(created.id, dir, 'python');
-  const reopened = new MemeLibrary(join(dir, 'empty-roundtrip')); await reopened.importZip(exported.path, 'python');
-  expect((await reopened.catalog())[0]).toMatchObject({ name: 'Empty', images: 0 });
+  const reopened = new MemeLibrary(join(dir, 'empty-roundtrip')); await expect(reopened.importZip(exported.path, 'python')).rejects.toThrow('no PNG or JPEG');
+  expect(await reopened.catalog()).toHaveLength(0);
 });
 it('creates empty categories, uploads verified image bytes, and rejects duplicates and unsafe names', async () => {
   const { instance, edit } = await setup();
@@ -51,7 +51,7 @@ it('deleting an empty category does not resurrect it on later edits; restoring i
   await edit({ kind: 'restore', ids: [image.id] });
   expect((await instance.library.catalog())[0].categories.some(c => c.name === 'happy')).toBe(true);
 });
-it('export round-trip preserves edited tags, categories, attribution and bytes, excluding trash', async () => {
+it('exported images can be imported as plain images, excluding trash', async () => {
   const { instance, edit, dir, packId } = await setup(); const entries = await instance.library.entries();
   const image = entries[0]; await edit({ kind: 'image', id: image.id, category: image.category, caption: '人工语义', tags: ['新标签'], visibleText: '配字' });
   await edit({ kind: 'createCategory', category: 'empty', description: '空分类也要保留' });
@@ -59,9 +59,9 @@ it('export round-trip preserves edited tags, categories, attribution and bytes, 
   const exported = await instance.library.exportZip(packId, dir, 'python');
   const reopened = new MemeLibrary(join(dir, 'roundtrip')); await reopened.importZip(exported.path, 'python');
   const imported = await reopened.entries(); expect(imported).toHaveLength(1);
-  expect(imported[0]).toMatchObject({ caption: '人工语义', tags: ['新标签'], visibleText: '配字', manual: true });
+  expect(imported[0]).toMatchObject({ caption: '', tags: [], visibleText: '', category:'未分类' });
   expect((await reopened.image(imported[0].id)).bytes).toEqual(PNG);
-  expect((await reopened.catalog())[0].categories).toContainEqual({ name: 'empty', description: '空分类也要保留', count: 0 });
+  expect((await reopened.catalog())[0].categories).toHaveLength(1);
 });
 it('disabled packs and trash immediately leave semantic retrieval; restoring or enabling takes effect without reindexing', async () => {
   const { instance, edit } = await setup(); await instance.search.build();

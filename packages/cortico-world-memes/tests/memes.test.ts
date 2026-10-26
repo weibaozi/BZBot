@@ -2,22 +2,23 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archive, FakeModelHub, PNG, world } from './helpers.ts';
+import { seed, archive, FakeModelHub, PNG, world } from './helpers.ts';
 import { MemeSearch } from '../server/search.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 const dirs: string[] = [];
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), 'meme-feature-')); dirs.push(dir);
   const state = world(dir);
-  await state.instance.library.importZip(await archive(dir), 'python');
+  await seed(state.instance.library);
   return { ...state, dir };
 }
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
-it('imports image bytes, categories, captions and tags without generating vectors', async () => {
-  const { instance } = await setup();
-  const entries = await instance.library.entries();
-  expect(entries).toHaveLength(2);
-  expect(entries[0]).toMatchObject({ category: 'affection', tags: ['安慰', '拥抱'], visibleText: '抱抱' });
+it('imports ZIP image bytes without application metadata or duplicate images', async () => {
+  const { instance,dir } = await setup();
+  const result=await instance.library.importZip(await archive(dir),'python');
+  const entries = (await instance.library.entries()).filter(e=>e.packId===result.id);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ category: '未分类', caption:'',tags: [], visibleText: '',searchable:false });
   expect((await instance.library.image(entries[0].id)).bytes).toEqual(PNG);
   expect((await instance.search.state()).indexed).toBe(0);
   await expect(instance.search.search('抱抱', 5)).rejects.toThrow('index unavailable');
@@ -27,10 +28,19 @@ it('rejects archive traversal and leaves the existing library intact', async () 
   await expect(instance.library.importZip(await archive(dir, { '../escape.txt': 'outside' }), 'python')).rejects.toThrow();
   expect(await instance.library.packs()).toHaveLength(1);
 });
-it('rejects descriptions attached to image bytes with a mismatched hash', async () => {
+it('imports nested PNG and uppercase JPEG, skips other files and rejects disguised images',async()=>{
+  const {instance,dir}=await setup();
+  const jpeg=Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9','hex');
+  const result=await instance.library.importZip(await archive(dir,{'readme.txt':'ignored'}, {'deep/a.PNG':PNG,'b.JPG':jpeg,'c.jpeg':jpeg,'ignore.gif':Buffer.from('GIF89a')}),'python');
+  const entries=(await instance.library.entries()).filter(e=>e.packId===result.id);
+  expect(entries.map(e=>e.mime).sort()).toEqual(['image/jpeg','image/png']);
+  await expect(instance.library.importZip(await archive(dir,{}, {'bad.png':Buffer.from('not image')}),'python')).rejects.toThrow('signature');
+});
+it('ignores AstrBot metadata instead of importing its descriptions', async () => {
   const { instance, dir } = await setup();
   const metadata = JSON.stringify({ images: { a: { relative_path: 'memes/affection/a.png', content_sha256: 'bad', caption: 'wrong' } } });
-  await expect(instance.library.importZip(await archive(dir, { 'semantic_metadata.json': metadata }), 'python')).rejects.toThrow('hash differs');
+  const result=await instance.library.importZip(await archive(dir, { 'semantic_metadata.json': metadata }), 'python');
+  expect((await instance.library.entries()).filter(e=>e.packId===result.id).every(e=>!e.caption)).toBe(true);
 });
 it('retrieves intended meaning and reuses query vectors; the index survives reopening', async () => {
   const { instance, cfg, models } = await setup();

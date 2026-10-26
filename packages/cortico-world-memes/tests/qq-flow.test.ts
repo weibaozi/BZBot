@@ -8,7 +8,7 @@ import { assembleBot } from '../../../vendor/cortico/bots/corti-soulmate/assembl
 import { MockOneBot } from '../../../vendor/cortico/tests/helpers/mock-onebot.ts';
 import { FakeLLM, makeCfg, makeLoaded, makeTmpDir, textReply, toolReply } from '../../../vendor/cortico/tests/core/helpers.ts';
 import { nullLogger } from 'cortico/core/util.ts';
-import { archive, world, PNG, FakeModelHub } from './helpers.ts';
+import { seed, archive, world, PNG, FakeModelHub } from './helpers.ts';
 
 it.each([0, 100])('selected meme id sends directly with proactive hint probability %i', async probability => {
   const tmp = makeTmpDir();
@@ -16,6 +16,7 @@ it.each([0, 100])('selected meme id sends directly with proactive hint probabili
   const port = await onebot.start();
   const cfg = makeCfg();
   cfg.worlds.qq = { ...cfg.worlds.qq, enabled: true, wsUrl: `ws://127.0.0.1:${port}`, groups: [{ id: 424242, enabled: true }], privates: [], token: '' };
+  cfg.worlds.qq.groupReply={probability:100,recentMessages:20,forceMention:true,sleepEnabled:false};
   cfg.worlds.console.enabled = false; cfg.web.port = 0;
   cfg.tick.dayIntervalMinutes = [999, 999]; cfg.tick.nightIntervalMinutes = null;
   cfg.batching.quietGapMs = 30; cfg.batching.maxBatchAgeMs = 100;
@@ -28,7 +29,7 @@ it.each([0, 100])('selected meme id sends directly with proactive hint probabili
   memeCfg.memes.minScore = -1;
   memeCfg.memes.proactiveSearchPercent = probability;
   try {
-    await instance.library.importZip(await archive(tmp.dir), 'python'); await instance.search.build();
+    await seed(instance.library); await instance.search.build();
     const entry = (await instance.library.entries()).find(e => e.category === 'happy')!;
     await bot.start(); await bot.qqWorld!.waitReady(5000);
     await bot.core.mountWorld(instance);

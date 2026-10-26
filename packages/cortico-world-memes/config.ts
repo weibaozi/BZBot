@@ -1,22 +1,25 @@
 import { proactiveStrings } from './server/proactive-strings.ts';
+import { collectionLabels } from './server/collection-strings.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { Language } from 'cortico/core/language.ts';
 export interface MemesConfigSection {
   enabled: boolean;
   memes: { enabled: boolean; pythonFile: string; embeddingModel: string; queryPrefix: string; topK: number;
     captionModel: string; minScore: number; proactiveSearchPercent: number;
-    maxMemes: number; timeoutSeconds: number };
+    maxMemes: number; timeoutSeconds: number; collectEnabled: boolean; collectDailyLimit: number };
 }
 export const MEMES_DEFAULTS: MemesConfigSection = {
   enabled: false,
   memes: { enabled: true, pythonFile: 'python', embeddingModel: '', queryPrefix: '', topK: 5,
     captionModel: '', minScore: 0.25, proactiveSearchPercent: 50,
-    maxMemes: 1, timeoutSeconds: 30 },
+    maxMemes: 1, timeoutSeconds: 30, collectEnabled: true, collectDailyLimit: 20 },
 };
 export function memesConfigGroup(language: Language): ConfigGroup {
   const t = (zh: string, en: string) => language.startsWith('zh') ? zh : en;
   return { id: 'world:memes', owner: 'world:memes', schema: { type: 'object', title: t('向量召回 · 主模型选图', 'Vector retrieval · conversation model selection'), properties: {
     'worlds.memes.memes.enabled': { type: 'boolean', title: t('启用表情检索', 'Enable meme retrieval'), 'x-hot': true },
+    'worlds.memes.memes.collectEnabled': { type: 'boolean', title: collectionLabels(language)[0], 'x-hot': true },
+    'worlds.memes.memes.collectDailyLimit': { type: 'integer', title: collectionLabels(language)[1], minimum: 0, maximum: 1000, 'x-hot': true },
     'worlds.memes.memes.proactiveSearchPercent': { type: 'integer', ...proactiveStrings(language), minimum: 0, maximum: 100, 'x-hot': true },
     'worlds.memes.memes.pythonFile': { type: 'string', title: t('Python 程序路径（导入 ZIP）', 'Python executable (ZIP import)'), 'x-hot': true },
     'worlds.memes.memes.embeddingModel': { type: 'string', title: t('嵌入模型', 'Embedding model'), 'x-options': 'models:embedding', 'x-hot': true },

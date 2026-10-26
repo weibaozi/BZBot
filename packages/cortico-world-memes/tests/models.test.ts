@@ -5,7 +5,7 @@ import { assembleBot } from '../../../vendor/cortico/bots/corti-soulmate/assembl
 import { FakeLLM, makeCfg, makeLoaded, makeTmpDir } from '../../../vendor/cortico/tests/core/helpers.ts';
 import { inputItem } from 'cortico/protocol/open-responses/context.ts';
 import { modelOptions } from 'cortico/providers/model-hub.ts';
-import { archive, FakeModelHub, PNG, world } from './helpers.ts';
+import { seed, archive, FakeModelHub, PNG, world } from './helpers.ts';
 import { CAPTION_PROMPT, parseModelJson } from '../server/models.ts';
 import { MEMES_DEFAULTS, memesConfigGroup } from '../config.ts';
 import type { Progress } from '../server/semantic.ts';
@@ -22,7 +22,7 @@ it('captions carry image input and generation overrides, and record usage throug
   const { instance, cfg: memeCfg } = world(tmp.dir, models);
   const progress = (): Progress => ({ stage: '', done: 0, total: 0, failed: 0, skipped: 0, errors: [] });
   try {
-    const pack = await instance.library.importZip(await archive(tmp.dir), 'python');
+    const pack = await seed(instance.library);
     await bot.start(); await bot.core.mountWorld(instance);
     expect(await instance.semantic.describe(pack.id, 'force', progress(), new AbortController().signal)).toMatchObject({ described: 2, failed: 0 });
     const call = models.chatCalls[0];

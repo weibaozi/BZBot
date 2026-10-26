@@ -3,14 +3,14 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { migrateQqextras } from '../server/migration.ts';
-import { archive, world, PNG } from './helpers.ts';
+import { seed, archive, world, PNG } from './helpers.ts';
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
 it('migrates config, prompt and real image/vector data with a backup and an idempotent retry', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'meme-migration-')); dirs.push(dir);
   const { instance, cfg } = world(dir);
-  await instance.library.importZip(await archive(dir), 'python'); await instance.search.build();
+  await seed(instance.library); await instance.search.build();
   const entry = (await instance.library.entries())[0];
   const { rename } = await import('node:fs/promises');
   await mkdir(join(dir, 'qqextras')); await rename(join(dir, 'memes'), join(dir, 'qqextras', 'memes'));

@@ -28,7 +28,7 @@ export class MemeSearch {
     if (!options.model) throw new Error(MODEL_REQUIRED);
     const entries = await this.library.entries();
     const eligible = entries.filter(e => e.searchable);
-    if (!eligible.length) throw new Error('No images with usable semantic descriptions; import a semantic export');
+    if (!eligible.length) throw new Error('No images with usable semantic descriptions; generate captions in meme management first');
     await this.state();
     const previous = this.index?.fingerprint === this.fingerprint(options) ? this.index : undefined;
     const next: Index = { version: 1, fingerprint: this.fingerprint(options), dimension: previous?.dimension ?? 0, items: [] };
