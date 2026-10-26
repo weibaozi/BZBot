@@ -101,6 +101,7 @@ export class MemesWorld implements World {
           const savedImage = savedPack.images.find(i => `${packId}:${i.id}` === entryId)!;
           if (!savedImage.caption.trim()) throw new Error('已保存，但缺少语义描述');
           await this.library.applySemantic(entryId!, hash(JSON.stringify(savedImage)), { searchable: true });
+          if (!existing) await this.semantic.classify([entryId!], signal);
           await this.search.build(signal, { packId, force: false });
           const entry = (await this.library.entries()).find(e => e.id === entryId)!;
           const pack = (await this.library.packs()).find(p => p.id === packId)!;
@@ -150,12 +151,17 @@ export class MemesWorld implements World {
         }
         if(method==='rejectCollection') { if(typeof arg.id!=='string')throw new Error('Image id required');return this.collection.reject(arg.id); }
         if(method==='approveCollection') {
-          if(typeof arg.id!=='string'||typeof arg.packId!=='string'||typeof arg.category!=='string')throw new Error('Image, pack and category required');
-          const {id,packId,category}=arg;
+          if(typeof arg.id!=='string'||typeof arg.packId!=='string')throw new Error('Image and pack required');
+          const {id,packId}=arg;
+          const category = typeof arg.category === 'string' ? arg.category : '未分类';
           return this.launch('approve',async(signal,progress)=>{
+            const pack = (await this.library.catalog()).find(p => p.id === packId);
+            if (!pack) throw new Error('Unknown pack');
+            if (!pack.categories.some(c => c.name === category)) await this.library.edit({kind:'createCategory',packId,revision:pack.revision,category,description:''});
             const entryId=await this.collection.approve(id,packId,category);
             const described=await this.semantic.describe(packId,'missing',progress,signal,[entryId]);
             if(described.failed)throw new Error('已入库，但标注失败；请在语义化页面重试失败项并补生成向量');
+            if (arg.category === undefined) await this.semantic.classify([entryId], signal);
             await this.search.build(signal,{packId,force:false});return {entryId};
           });
         }
@@ -183,6 +189,7 @@ export class MemesWorld implements World {
           const mode = arg.mode === 'force' ? 'force' : arg.mode === 'retry' ? 'retry' : 'missing';
           return this.launch('semantic', async (signal, progress) => {
             const described = await this.semantic.describe(packId, mode, progress, signal);
+            await this.semantic.classify((await this.library.entries()).filter(e => e.packId === packId && !e.manual).map(e => e.id), signal);
             if (arg.vectors === true) await this.search.build(signal, { force: false, packId, progress: (done, total) => Object.assign(progress, { stage: '生成向量', done, total }) });
             return described;
           });
@@ -205,7 +212,7 @@ export class MemesWorld implements World {
             && (!query || [e.category, e.caption, e.visibleText, ...e.tags].join(' ').toLowerCase().includes(query))
             && (arg.status !== 'missing' || !e.caption) && (arg.status !== 'review' || Boolean(e.caption) && !e.searchable)
             && (arg.status !== 'error' || Boolean(e.semanticError)));
-          return { total: entries.length, entries: entries.slice(offset, offset + 24).map(({ file, ...entry }) => entry) };
+          return { total: entries.length, entries: (arg.all === true ? entries : entries.slice(offset, offset + 24)).map(({ file, ...entry }) => entry) };
         }
         if (method === 'image') {
           if (typeof arg.id !== 'string') throw new Error('id must be a string');

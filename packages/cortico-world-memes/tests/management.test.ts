@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { seed, archive, PNG, world } from './helpers.ts';
@@ -12,6 +12,18 @@ async function setup() {
   return { dir, instance, cfg, edit, packId: imported.id };
 }
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+it('lists the whole gallery beyond 24 images while preserving filters and legacy pagination', async () => {
+  const { instance, packId } = await setup();
+  const path = join(instance.library.dir, 'packs', packId, 'pack.json');
+  const pack = JSON.parse(await readFile(path, 'utf8'));
+  pack.images = Array.from({length: 35}, (_, i) => ({...pack.images[0], id: String(i), caption: `image ${i}`}));
+  await writeFile(path, JSON.stringify(pack));
+  const list = (args: Record<string, unknown>) => instance.webUi().invoke('memes', 'list', [{packId, ...args}]) as Promise<{total:number;entries:unknown[]}>;
+  expect((await list({})).entries).toHaveLength(24);
+  expect((await list({all:true})).entries).toHaveLength(35);
+  expect((await list({all:true,query:'image 34'})).entries).toHaveLength(1);
+  expect((await list({all:true,trash:true})).entries).toHaveLength(0);
+});
 it('rejects importing an empty ZIP without inventing an image', async () => {
   const { instance, dir } = await setup(); const created = await instance.library.create('Empty');
   const exported = await instance.library.exportZip(created.id, dir, 'python');

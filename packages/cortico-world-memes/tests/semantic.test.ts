@@ -13,6 +13,22 @@ async function setup(models = new FakeModelHub()) {
 }
 const progress = (): Progress => ({ stage: '', done: 0, total: 0, failed: 0, skipped: 0, errors: [] });
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+it('assigns an incoming image using existing vector examples, without another chat call', async () => {
+  const models = new FakeModelHub(async () => ({caption:'开心庆祝',tags:['开心'],visible_text:'',needs_review:false}));
+  const {instance,cfg,edit,packId} = await setup(models);
+  await edit({kind:'createCategory',category:'未分类',description:''});
+  const id = await instance.library.addCollected(Buffer.concat([PNG,Buffer.from('new')]),'image/png',packId,'未分类');
+  await instance.semantic.describe(packId,'missing',progress(),new AbortController().signal,[id]);
+  const classify = () => instance.semantic.classify([id],new AbortController().signal);
+  await classify();expect((await instance.library.image(id)).entry.category).toBe('未分类');
+  await instance.search.build();cfg.memes.minScore=1.01;
+  await classify();expect((await instance.library.image(id)).entry.category).toBe('未分类');
+  cfg.memes.minScore=0.5;await classify();
+  expect((await instance.library.image(id)).entry.category).toBe('happy');
+  expect(models.chatCalls).toHaveLength(1);
+  await instance.search.build(undefined,{force:false,packId});
+  expect((await instance.search.state()).pending).toBe(0);
+});
 it('recall returns ranked candidates without any generation call and reuses query embeddings', async () => {
   let generations = 0;
   const { instance, cfg } = await setup(new FakeModelHub(async () => { generations++; throw new Error('Retrieval must not call a model'); }));

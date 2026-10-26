@@ -34,7 +34,7 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .port-category-heading .hint { margin-right:auto; }
 .port-category-heading button { min-height:34px; padding:6px 10px; font-size:12px; }
 .port-category-description { color:var(--text-muted); margin:10px 0 14px; }
-.port-grid { display:grid; width:100%; min-width:0; grid-template-columns:repeat(auto-fill,minmax(min(100%,150px),1fr)); gap:14px; align-items:start; }
+.port-grid { display:grid; width:100%; min-width:0; grid-template-columns:repeat(auto-fill,minmax(min(100%,112px),1fr)); gap:10px; align-items:start; }
 .port-card { position:relative; display:block; width:100%; min-width:0; aspect-ratio:1; margin:0; padding:0; border:1px solid var(--border-strong); border-radius:18px; overflow:hidden; background:var(--surface-inset); }
 .port-card[data-review=manual] { border-color:#36a56b; box-shadow:0 0 0 2px #36a56b; }
 .port-card[data-review=pending] { border-color:var(--warning-border); }
@@ -78,10 +78,13 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 @container (max-width:600px) {
   .meme-port { padding:12px; }
   .port-layout>main { padding:12px; }
-  .port-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .port-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,96px),1fr)); gap:8px; }
   .port-card,.port-upload-tile { border-radius:12px; }
   .port-categories { flex-wrap:nowrap; overflow-x:auto; padding-bottom:8px; }
   .library-search-row input { flex-basis:100%; }
   .page-title-block h1 { font-size:22px; }
   .port-category-heading button { padding:6px 8px; }
 }
+
+.port-review-card { min-width:0; }
+.port-grid:has(.port-review-card) { grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr)); }

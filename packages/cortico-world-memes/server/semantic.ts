@@ -11,6 +11,30 @@ export class MemeSemantic {
     private config: () => MemesConfigSection['memes'], private models: ModelHub,
     private reportUsage: WorldHost['reportUsage']) {}
 
+  /** Use existing indexed examples; no extra language-model call or forced category guess. */
+  async classify(ids: string[], signal: AbortSignal) {
+    const state = await this.search.state();
+    if (!state.compatible || !state.valid) return;
+    const reserved = new Set(['未分类', '已学习', 'needs_review', '_pending_review']);
+    for (const id of ids) {
+      signal.throwIfAborted();
+      const entry = (await this.library.entries()).find(e => e.id === id);
+      if (!entry?.caption || !entry.searchable || !reserved.has(entry.category)) continue;
+      const query = [entry.caption, ...entry.tags, entry.visibleText].join(' ').slice(0, 2000);
+      const result = await this.search.search(query, 10, signal);
+      const candidate = result.candidates.find(c => c.id !== id && !reserved.has(c.category) && c.score >= this.config().minScore);
+      if (!candidate) continue;
+      const source = (await this.library.entries()).find(e => e.id === candidate.id)!;
+      let pack = (await this.library.catalog()).find(p => p.id === entry.packId)!;
+      if (!pack.categories.some(c => c.name === source.category)) {
+        await this.library.edit({kind:'createCategory',packId:pack.id,revision:pack.revision,category:source.category,description:source.categoryDescription});
+        pack = (await this.library.catalog()).find(p => p.id === entry.packId)!;
+      }
+      signal.throwIfAborted();
+      await this.library.edit({kind:'move',packId:pack.id,revision:pack.revision,ids:[id],category:source.category});
+    }
+  }
+
   async describe(packId: string, mode: 'missing' | 'retry' | 'force', progress: Progress, signal: AbortSignal, ids?: string[], approved = false) {
     const packs = await this.library.packs();
     if (!packs.some(p => p.id === packId)) throw new Error('Select a pack');
